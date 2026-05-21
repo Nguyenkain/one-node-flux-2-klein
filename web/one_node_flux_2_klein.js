@@ -1049,6 +1049,10 @@ app.registerExtension({
         _mkModelRow("VAE","models/vae/",[
           {name:"flux2-vae",url:"https://huggingface.co/Comfy-Org/vae-text-encorder-for-flux-klein-9b/resolve/main/split_files/vae/flux2-vae.safetensors"},
         ]),
+        _mkModelRow("Faceswap LoRA","models/loras/",[
+          {name:"bfs head swap v1 (9b)",url:"https://huggingface.co/Alissonerdx/BFS-Best-Face-Swap/resolve/main/bfs_head_v1_flux-klein_9b_step3500_rank128.safetensors"},
+          {name:"bfs head swap v1 (4b)",url:"https://huggingface.co/Alissonerdx/BFS-Best-Face-Swap/resolve/main/bfs_head_v1_flux-klein_4b.safetensors"},
+        ]),
         _mkModelRow("BG Removal","models/background_removal/",[
           {name:"birefnet",url:"https://huggingface.co/Comfy-Org/BiRefNet/resolve/main/background_removal/birefnet.safetensors"},
         ]),
@@ -7891,8 +7895,10 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       });
       lbChipAdv.innerHTML=`<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/></svg><span>ADV</span>`;
 
-      // Input image thumbnail (shown when meta has image1)
+      // Input image thumbnails (shown when meta has image1 / image2)
       const lbImgThumb=mk("img",{height:"40px",borderRadius:"4px",objectFit:"cover",
+        display:"none",alignSelf:"center",border:`1px solid ${C.border}`});
+      const lbImgThumb2=mk("img",{height:"40px",borderRadius:"4px",objectFit:"cover",
         display:"none",alignSelf:"center",border:`1px solid ${C.border}`});
 
       // Restore button
@@ -8089,7 +8095,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         });
       };
 
-      lbInfoRow.append(lbChipRes,lbChipMode,lbChipAdv,lbImgThumb,lbRestoreBtn,_lbUseWrap,lbFavBtn,lbDelBtn,lbOpenBtn);
+      lbInfoRow.append(lbChipRes,lbChipMode,lbChipAdv,lbImgThumb,lbImgThumb2,lbRestoreBtn,_lbUseWrap,lbFavBtn,lbDelBtn,lbOpenBtn);
 
       // LoRA row — subtle, hidden when no loras
       const lbLoraRow=mk("div",{display:"none",gap:"4px",flexWrap:"wrap",alignItems:"center"});
@@ -8213,6 +8219,10 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
             lbImgThumb.src=api.apiURL(`/view?filename=${encodeURIComponent(meta.image1)}&type=input&subfolder=`);
             lbImgThumb.style.display="block";
           } else { lbImgThumb.style.display="none"; }
+          if(meta.image2){
+            lbImgThumb2.src=api.apiURL(`/view?filename=${encodeURIComponent(meta.image2)}&type=input&subfolder=`);
+            lbImgThumb2.style.display="block";
+          } else { lbImgThumb2.style.display="none"; }
           // LoRA chips
           if(Array.isArray(meta.userLoras)&&meta.userLoras.length){
             meta.userLoras.forEach(ul=>{
@@ -8237,6 +8247,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
           tx(lbChipMode.querySelector("div:last-child"),"—");
           lbChipAdv.style.display="none";
           lbImgThumb.style.display="none";
+          lbImgThumb2.style.display="none";
           lbMeta.style.display="flex";
           _setLbFav(false);
         }
@@ -8833,34 +8844,40 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
             return list[0]||saved;
           };
           const modelList=(d.diffusion_models||[]).filter(f=>f!=="none");
-          if(modelList.length){const v=pick(modelList,S.model,"klein");S.model=v;modelF.dd.updateItems(modelList);modelF.dd.set(v);persist();}
-          if(d.text_encoders?.length){const v=pick(d.text_encoders,S.textEncoder,"qwen");S.textEncoder=v;teF.dd.updateItems(d.text_encoders);teF.dd.set(v);persist();}
-          if(d.vaes?.length){const v=pick(d.vaes,S.vae,"flux2");S.vae=v;vaeF.dd.updateItems(d.vaes);vaeF.dd.set(v);persist();}
+          if(modelList.length){const v=pick(modelList,S.model,"klein");S.model=v;modelF.dd.updateItems(modelList);modelF.dd.set(v);}
+          else{S.model="";modelF.dd.updateItems(["none"]);modelF.dd.set("none");}
+          const teList=(d.text_encoders||[]).filter(f=>f!=="none");
+          if(teList.length){const v=pick(teList,S.textEncoder,"qwen");S.textEncoder=v;teF.dd.updateItems(teList);teF.dd.set(v);}
+          else{S.textEncoder="";teF.dd.updateItems(["none"]);teF.dd.set("none");}
+          const vaeList=(d.vaes||[]).filter(f=>f!=="none");
+          if(vaeList.length){const v=pick(vaeList,S.vae,"flux2");S.vae=v;vaeF.dd.updateItems(vaeList);vaeF.dd.set(v);}
+          else{S.vae="";vaeF.dd.updateItems(["none"]);vaeF.dd.set("none");}
+          persist();
           // Populate LoRA dropdowns
-          if(d.loras?.length){
-            _loraList=d.loras;
-            const loraOpts=["none",...d.loras];
-            _ulRowEls.forEach((r,i)=>{
-              r._dd.updateItems(loraOpts);
-              const saved=S.userLoras[i].name;
-              if(saved&&saved!=="none"){
-                const nd=(s)=>s.replace(/\\/g,"/").toLowerCase();
-                const match=loraOpts.find(o=>nd(o)===nd(saved))||
-                  loraOpts.find(o=>nd(o).split("/").pop()===nd(saved).split("/").pop());
-                if(match){r._dd.set(match);S.userLoras[i].name=match;}
-                else r._dd.set("none");
-              } else r._dd.set("none");
-            });
-            _ulUpdateBtn();
-            // Populate Faceswap LoRA dropdown from same loras list
-            const fsLoraOpts=["none",...d.loras];
-            fsLoraF.dd.updateItems(fsLoraOpts);
+          const loraList=(d.loras||[]).filter(f=>f!=="none");
+          _loraList=loraList;
+          const loraOpts=["none",...loraList];
+          _ulRowEls.forEach((r,i)=>{
+            r._dd.updateItems(loraOpts);
+            const saved=S.userLoras[i].name;
+            if(saved&&saved!=="none"&&loraList.length){
+              const nd=(s)=>s.replace(/\\/g,"/").toLowerCase();
+              const match=loraOpts.find(o=>nd(o)===nd(saved))||
+                loraOpts.find(o=>nd(o).split("/").pop()===nd(saved).split("/").pop());
+              if(match){r._dd.set(match);S.userLoras[i].name=match;}
+              else{r._dd.set("none");S.userLoras[i].name="";}
+            } else{r._dd.set("none");S.userLoras[i].name="";}
+          });
+          _ulUpdateBtn();
+          // Faceswap LoRA dropdown
+          fsLoraF.dd.updateItems(loraOpts);
+          if(loraList.length){
             const nd=(s)=>(s||"").replace(/\\/g,"/").toLowerCase();
-            const fsMatch=fsLoraOpts.find(o=>nd(o)===nd(S.fsLora||""))||
-              fsLoraOpts.find(o=>nd(o).split("/").pop()===nd(S.fsLora||"").split("/").pop());
+            const fsMatch=loraOpts.find(o=>nd(o)===nd(S.fsLora||""))||
+              loraOpts.find(o=>nd(o).split("/").pop()===nd(S.fsLora||"").split("/").pop());
             if(fsMatch&&fsMatch!=="none"){fsLoraF.dd.set(fsMatch);S.fsLora=fsMatch;}
-            else if(S.fsLora) fsLoraF.dd.set("none");
-          }
+            else{fsLoraF.dd.set("none");S.fsLora="";}
+          } else{fsLoraF.dd.set("none");S.fsLora="";}
           persist();
         })
         .catch(e=>console.warn("[FluxKlein] models:",e));
