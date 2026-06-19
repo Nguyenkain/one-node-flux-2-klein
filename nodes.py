@@ -116,9 +116,9 @@ def _save_config(cfg):
 
 def _get_output_dir():
     try:
-        return folder_paths.get_output_directory()
+        return str(Path(folder_paths.get_output_directory()).resolve())
     except Exception:
-        return os.path.join(os.path.dirname(NODE_DIR), "output")
+        return str(Path(os.path.join(os.path.dirname(NODE_DIR), "output")).resolve())
 
 
 def _find_ffmpeg():
