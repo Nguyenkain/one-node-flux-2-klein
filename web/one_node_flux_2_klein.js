@@ -471,7 +471,6 @@ app.registerExtension({
     nodeType.prototype.onNodeCreated=function(){
       this.color=C.bg0;this.bgcolor=C.bg0;this.resizable=false;
       this.outputs=[];
-      // Hide input labels but keep slots for connection detection
       if(this.widgets)this.widgets=[];
 
       if(!window.__fluxklein_nodes) window.__fluxklein_nodes={};
@@ -486,7 +485,7 @@ app.registerExtension({
         _activePromptIdRef=cached.fns.getPromptId;
         this.addDOMWidget("fk_ui","div",cached.root,{
           getValue(){return null;},setValue(){},serialize:false,
-          computeSize(){return[NODE_W,NODE_H];},
+          computeSize(){const slotH=(LiteGraph.NODE_SLOT_HEIGHT||20);const n=(self.inputs||[]).length;return[NODE_W,NODE_H+n*slotH];},
         });
         this.setSize([NODE_W,NODE_H]);
         requestAnimationFrame(()=>{
@@ -757,10 +756,10 @@ app.registerExtension({
         width:"100%",height:_uiH+"px",
         overflowY:"hidden",overflowX:"hidden",boxSizing:"border-box",
       });
+      const _fwdCv=document.querySelector("canvas.litegraph");
       scrollEl.addEventListener("wheel",e=>{
         // Always forward wheel to canvas for zoom — node content doesn't scroll
-        const cv=document.querySelector("canvas.litegraph");
-        if(cv) cv.dispatchEvent(new WheelEvent("wheel",{deltaY:e.deltaY,deltaX:e.deltaX,
+        if(_fwdCv) _fwdCv.dispatchEvent(new WheelEvent("wheel",{deltaY:e.deltaY,deltaX:e.deltaX,
           clientX:e.clientX,clientY:e.clientY,ctrlKey:e.ctrlKey,metaKey:e.metaKey,
           bubbles:true,cancelable:true}));
         e.preventDefault();
@@ -3271,7 +3270,7 @@ app.registerExtension({
         });
         if(ci===1||ci===2) d.style.cursor="nesw-resize";
         // mousedown on handle → start scale drag for this corner
-        d.addEventListener("mousedown",ev=>{
+        d.addEventListener("pointerdown",ev=>{
           if(ev.button!==0) return;
           ev.preventDefault();ev.stopPropagation();
           const al=_sketchLayers[_sketchActiveLayer];if(!al||!_skBBox) return;
@@ -3345,7 +3344,7 @@ app.registerExtension({
         return {r,sx:r.width/_sketchViewport.offsetWidth||1,sy:r.height/_sketchViewport.offsetHeight||1};
       };
 
-      _skRotateHandle.addEventListener("mousedown",ev=>{
+      _skRotateHandle.addEventListener("pointerdown",ev=>{
         if(ev.button!==0) return;
         ev.preventDefault();ev.stopPropagation();
         const layer=_sketchLayers[_sketchActiveLayer];if(!layer||!_skBBox) return;
@@ -3368,7 +3367,7 @@ app.registerExtension({
         _skRotOrigOXH=layer._ox||0; _skRotOrigOYH=layer._oy||0;
       });
 
-      document.addEventListener("mousemove",ev=>{
+      document.addEventListener("pointermove",ev=>{
         if(!_skRotDragging||_sketchOv.style.display==="none") return;
         const layer=_sketchLayers[_sketchActiveLayer];if(!layer||!_skRotOrigForHandle) return;
         const {r,sx,sy}=_skRotGetVpScale();
@@ -3406,7 +3405,7 @@ app.registerExtension({
         _skRotateLine.style.top=(hVy+9)+"px";
       });
 
-      document.addEventListener("mouseup",()=>{
+      document.addEventListener("pointerup",()=>{
         if(!_skRotDragging) return;
         _skRotDragging=false;
         _skRotateHandle.style.cursor="grab";
@@ -9026,10 +9025,12 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       // Auto-refresh Settings dropdowns when connections change
       self.onConnectionsChange=function(){ _refreshExtInputUI(); };
 
+
+
       const _slotHInit=(self.inputs||[]).length*(LiteGraph.NODE_SLOT_HEIGHT||20);
       this.addDOMWidget("fk_ui","div",root,{
         getValue(){return null;},setValue(){},serialize:false,
-        computeSize(){return[NODE_W,NODE_H];},
+        computeSize(){const slotH=(LiteGraph.NODE_SLOT_HEIGHT||20);const n=(self.inputs||[]).length;return[NODE_W,NODE_H+n*slotH];},
       });
       this.setSize([NODE_W,NODE_H+_slotHInit]);
 
