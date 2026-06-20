@@ -109,6 +109,13 @@ Built with the help of [Claude](https://claude.ai) by Anthropic.
 
 ## Changelog
 
+### June 20, 2026
+
+**Negative LoRA strength**
+LoRA strength now accepts negative values - useful for concept sliders and suppressing specific styles or features.
+
+---
+
 ### June 19, 2026
 
 **External loaders (GGUF support)**

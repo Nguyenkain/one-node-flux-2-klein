@@ -6197,9 +6197,9 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
           border:`1px solid rgba(255,255,255,.1)`,borderRadius:"6px",
           color:LIME,fontSize:"10px",fontWeight:"700",
           padding:"5px 0",outline:"none",transition:"border-color .15s",flexShrink:"0",
-        },{type:"number",min:"0",max:"2",step:"0.05",value:String(S.userLoras[idx].name&&S.userLoras[idx].name!=="none"?S.userLoras[idx].strength||1:0)});
+        },{type:"number",step:"0.05",value:String(S.userLoras[idx].name&&S.userLoras[idx].name!=="none"?S.userLoras[idx].strength||1:0)});
         ulStr.onfocus=()=>ulStr.style.borderColor=LIME;
-        ulStr.onblur=()=>{ S.userLoras[idx].strength=Math.max(0,Math.min(2,+ulStr.value||0));
+        ulStr.onblur=()=>{ S.userLoras[idx].strength=isNaN(+ulStr.value)?1:+ulStr.value;
           ulStr.value=String(S.userLoras[idx].strength);persist(); };
         ulStr.oninput=()=>{ S.userLoras[idx].strength=+ulStr.value||0;persist(); };
 
