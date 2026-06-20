@@ -688,7 +688,10 @@ async def get_models(request):
         vaes = ["none"]
 
     # LoRAs
-    loras = _scan("loras")
+    try:
+        loras = _scan("loras")
+    except Exception:
+        loras = ["none"]
 
     return web.json_response({
         "diffusion_models": diff,

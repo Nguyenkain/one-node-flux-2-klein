@@ -419,7 +419,7 @@ function saveState(s){
 }
 
 // ── Active refs for event handlers ────────────────────────────────────────────
-let _activeS=null, _activeShowFinal=null, _activeResetBtn=null, _activeShowError=null, _activePromptIdRef=null;
+let _activeS=null, _activeShowFinal=null, _activeResetBtn=null, _activeShowError=null, _activePromptIdRef=null, _activeShowPreview=null;
 
 // ── API events ────────────────────────────────────────────────────────────────
 (()=>{
@@ -457,6 +457,14 @@ let _activeS=null, _activeShowFinal=null, _activeResetBtn=null, _activeShowError
     _activeShowError?.(msg);
     _activeResetBtn?.();
   });
+
+  api.addEventListener("b_preview",evt=>{
+    if(!_activeS?.generating) return;
+    const blob=evt.detail;
+    if(!blob) return;
+    const url=URL.createObjectURL(blob);
+    _activeShowPreview?.(url);
+  });
 })();
 
 let _activeSetStage=null;
@@ -479,6 +487,7 @@ app.registerExtension({
       if(cached){
         _activeS=cached.S;
         _activeShowFinal=cached.fns.showFinal;
+        _activeShowPreview=cached.fns.showPreview;
         _activeResetBtn=cached.fns.resetBtn;
         _activeShowError=cached.fns.showError;
         _activeSetStage=cached.fns.setStage;
@@ -904,7 +913,7 @@ app.registerExtension({
 
       // Row 2: Faceswap LoRA + Remove BG model
       const modGrid2=mk("div",{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"8px",marginBottom:"16px"});
-      const fsLoraF=mkModDD("Faceswap LoRA","/models/loras",S.fsLora,v=>{S.fsLora=v;persist();},"klein");
+      const fsLoraF=mkModDD("Faceswap LoRA","/models/loras",S.fsLora,v=>{S.fsLora=v;persist();});
       const bgF=mkModDD("Remove BG Model","models/background_removal","none",v=>{S.bgRemovalModel=v==="none"?"":v;persist();});
       api.fetchApi("/flux_klein/bgremoval_models").then(r=>r.json()).then(d=>{
         const models=d.models||[];
@@ -7271,7 +7280,17 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
 
       let _lastGenObj=null; // {filename, subfolder} of the most recently generated image
 
+      let _previewBlobUrl=null;
+      const showPreview=(url)=>{
+        if(_previewBlobUrl) URL.revokeObjectURL(_previewBlobUrl);
+        _previewBlobUrl=url;
+        placeholder.style.display="none";
+        finalImg.src=url;
+        finalImg.style.display="block";
+      };
+
       const showFinal=(url,filename,subfolder)=>{
+        if(_previewBlobUrl){ URL.revokeObjectURL(_previewBlobUrl); _previewBlobUrl=null; }
         clearError();S.generating=false;S.previewUrl=null;_activePromptId=null;persist();
         _resetGenBtn();
         if(soundEnabled)playDone();
@@ -7819,7 +7838,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         try{
           const resp=await api.fetchApi("/prompt",{
             method:"POST",headers:{"Content-Type":"application/json"},
-            body:JSON.stringify({prompt,client_id:api.clientId}),
+            body:JSON.stringify({prompt,client_id:api.clientId,extra_data:{enable_previews:true}}),
           });
           const result=await resp.json();
           const wfErrs=Object.entries(result.node_errors||{}).filter(([k])=>k!==String(self.id));
@@ -9060,10 +9079,11 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       if(!window.__fluxklein_nodes) window.__fluxklein_nodes={};
       window.__fluxklein_nodes[this.id]={
         root,S,
-        fns:{showFinal,resetBtn,setStage,showError,clearError,getPromptId:()=>_activePromptId},
+        fns:{showFinal,showPreview,resetBtn,setStage,showError,clearError,getPromptId:()=>_activePromptId},
       };
       _activeS=S;
       _activeShowFinal=showFinal;
+      _activeShowPreview=showPreview;
       _activeResetBtn=resetBtn;
       _activeSetStage=setStage;
       _activeShowError=showError;
