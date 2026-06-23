@@ -999,7 +999,7 @@ app.registerExtension({
         width:"14px",height:"14px",borderRadius:"50%",background:S.downscaleRef?"#111":"#888",transition:"left .2s,background .2s"});
       _dsTrack.appendChild(_dsThumb);
       const _dsHint=mk("div",{fontSize:"9px",color:C.muted,lineHeight:"1.5"});
-      _dsHint.innerHTML="Shrinks the input image before it enters the model - in <b>EDIT</b>, <b>I2I</b> and <b>Sketch</b> modes. Lower MP = faster generation and lower VRAM, but finer details may be lost and the result can shift slightly, since the image gets resized to fit the model. Recommended if you have limited VRAM or hit out-of-memory errors on large images. Turn it <b>off</b> for maximum fidelity when your GPU can handle the full resolution.";
+      _dsHint.innerHTML="Shrinks the input image before it enters the model - in <b>EDIT</b> and <b>Sketch</b> modes. Lower MP = faster generation and lower VRAM, but finer details may be lost and the result can shift slightly, since the image gets resized to fit the model. Recommended if you have limited VRAM or hit out-of-memory errors on large images. Turn it <b>off</b> for maximum fidelity when your GPU can handle the full resolution.";
       const _dsApplyEnabled=()=>{
         const on=S.downscaleRef;
         _dsMP.disabled=!on;
@@ -8068,8 +8068,12 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
           set("FKI2I:img","image",   S.i2iImage||"placeholder.png");
           set("FK:86","filename_prefix","one-node-flux-2-klein/FK");
 
-          // Resize input image by longer side if enabled (explicit user override)
-          let _i2iResized=false;
+          // Resize input image by longer side if enabled (explicit user override).
+          // NOTE: the global "downscale reference" toggle is intentionally NOT applied
+          // in I2I — here the latent IS the input image (img2img with denoise < 1),
+          // so the encoded size also defines the OUTPUT size. Shrinking it would shrink
+          // the result. Output size is therefore driven by the size badge or this
+          // longer-side resize only.
           if(S.i2iResizeLonger>0){
             const dims=_i2iDims._getDims();
             if(dims.w&&dims.h){
@@ -8082,19 +8086,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
                 _meta:{title:"Scale I2I Input"},
               };
               prompt["FKI2I:vae"].inputs.pixels=["FKI2I:scale",0];
-              _i2iResized=true;
             }
-          }
-          // Reference downscale toggle (I2I) — only when no explicit longer-side
-          // resize is active. Inserts a ScaleToTotalPixels before the VAE encode.
-          if(!_i2iResized&&S.downscaleRef){
-            const mp=+(S.downscaleRefMP)>0?+(S.downscaleRefMP):1.0;
-            prompt["FKI2I:scaleMP"]={
-              class_type:"ImageScaleToTotalPixels",
-              inputs:{image:["FKI2I:img",0],upscale_method:"lanczos",megapixels:mp,resolution_steps:1},
-              _meta:{title:"Downscale I2I Input"},
-            };
-            prompt["FKI2I:vae"].inputs.pixels=["FKI2I:scaleMP",0];
           }
 
           // KV + LoRA chain → ModelSamplingAuraFlow → KSampler
