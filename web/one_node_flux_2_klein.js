@@ -1457,21 +1457,13 @@ app.registerExtension({
         _nfTopBar.append(_nfName,_nfCloseBtn);
         const _nfMediaWrap=mk("div",{width:"100%",height:"100%",display:"flex",
           alignItems:"center",justifyContent:"center",padding:"48px 16px 16px",boxSizing:"border-box"});
-        const _nfPillRow=mk("div",{display:"flex",gap:"6px",justifyContent:"center",
-          flexWrap:"wrap",marginTop:"8px"});
-        const _nfPill=(t)=>{
-          const p=mk("div",{fontSize:"9px",color:"rgba(255,255,255,.55)",fontWeight:"600",
-            border:"1px solid rgba(255,255,255,.15)",borderRadius:"20px",
-            padding:"2px 9px",letterSpacing:".04em",whiteSpace:"nowrap",background:"rgba(255,255,255,.05)"});
-          tx(p,t);return p;
-        };
         const _nfClose=()=>{
           if(ov._cleanupCmp){ov._cleanupCmp();ov._cleanupCmp=null;}
           if(ov._fsUseBtn){ov._fsUseBtn.remove();ov._fsUseBtn=null;}
           ov.style.display="none";
           const img=_nfMediaWrap.querySelector("img");
           if(img) img.src="";
-          _nfMediaWrap.innerHTML="";_nfPillRow.innerHTML="";
+          _nfMediaWrap.innerHTML="";
           // Restore preview action buttons
           if(typeof previewUseWrap!=="undefined") previewUseWrap.style.visibility="";
           if(typeof previewDelBtn!=="undefined") previewDelBtn.style.visibility="";
@@ -1482,7 +1474,8 @@ app.registerExtension({
         ov._close=_nfClose;
         ov.append(_nfTopBar,_nfMediaWrap);
         ov._open=(type,src,name,opts)=>{
-          _nfMediaWrap.innerHTML="";_nfPillRow.innerHTML="";
+          _nfMediaWrap.innerHTML="";
+          _nfMediaWrap.style.padding="0"; // image and comparer both fill the full area
           tx(_nfName,name||"");
           // Hide preview action buttons while fullscreen overlay is open (image-only mode)
           if(type==="image"){
@@ -1490,17 +1483,13 @@ app.registerExtension({
             if(typeof previewDelBtn!=="undefined"&&previewDelBtn) previewDelBtn.style.visibility="hidden";
           }
           if(type==="image"){
-            const outer=mk("div",{display:"flex",flexDirection:"column",alignItems:"center",
-              justifyContent:"center",gap:"8px",width:"100%",height:"100%"});
-            const img=mk("img",{maxWidth:"100%",maxHeight:"calc(100% - 56px)",objectFit:"contain",
+            // Image fills the whole overlay (like the comparer): no dims badge, no
+            // top/bottom reserved space — just the largest possible contained image.
+            _nfMediaWrap.style.padding="0";
+            const img=mk("img",{maxWidth:"100%",maxHeight:"100%",objectFit:"contain",
               borderRadius:"8px",boxShadow:"0 4px 24px rgba(0,0,0,.5)",display:"block"});
             img.src=src;
-            img.onload=()=>{
-              _nfPillRow.innerHTML="";
-              _nfPillRow.appendChild(_nfPill(`${img.naturalWidth}×${img.naturalHeight} px`));
-            };
-            outer.append(img,_nfPillRow);
-            _nfMediaWrap.appendChild(outer);
+            _nfMediaWrap.appendChild(img);
           } else if(type==="comparer"){
             // Full-screen before/after comparer with "Use as input" in top-right
             const {genSrc,baseSrc,onUse}=opts||{};
@@ -9386,7 +9375,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
           };
         } else if(finalImg.style.display!=="none"&&finalImg.src){
           src=finalImg.src;
-          name=finalImg.src.split("/").pop().split("?")[0]||"Image";
+          name="Preview";
         }
         if(!src) return;
 
