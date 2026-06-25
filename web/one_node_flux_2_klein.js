@@ -210,6 +210,10 @@ function Pill(txt,active,onClick){
   return b;
 }
 
+// Parse a float that may use a comma as the decimal separator (common on EU
+// locales, where parseFloat("0,5") returns 0). Returns NaN for empty/invalid.
+function _pf(v){ return parseFloat(String(v).replace(",",".")); }
+
 // ── Number input ──────────────────────────────────────────────────────────────
 function NI(_label,val,min,max,_step,onChange,width="72px"){
   const wrap=mk("div",{
@@ -221,15 +225,15 @@ function NI(_label,val,min,max,_step,onChange,width="72px"){
     flex:"1 1 0",minWidth:"0",background:"transparent",border:"none",outline:"none",
     color:C.text,fontSize:"11px",padding:"0",textAlign:"left",
   },{type:"number",min:String(min),max:String(max),value:String(val)});
-  inp.oninput=()=>{ const v=Math.max(min,Math.min(max,parseFloat(inp.value)||min)); onChange(v); };
+  inp.oninput=()=>{ const v=Math.max(min,Math.min(max,_pf(inp.value)||min)); onChange(v); };
   inp.onfocus=()=>{ inp.select(); wrap.style.borderColor=LIME; };
-  inp.onblur=()=>{ inp.value=String(Math.max(min,Math.min(max,parseFloat(inp.value)||min))); wrap.style.borderColor=C.border; };
+  inp.onblur=()=>{ inp.value=String(Math.max(min,Math.min(max,_pf(inp.value)||min))); wrap.style.borderColor=C.border; };
   inp.addEventListener("keydown",e=>{
     if(e.key==="Enter"){ inp.blur(); return; }
     if(e.key==="ArrowUp"||e.key==="ArrowDown"){
       e.preventDefault();
       const step=wrap._arrowStep||8;
-      const cur=Math.max(min,Math.min(max,parseFloat(inp.value)||min));
+      const cur=Math.max(min,Math.min(max,_pf(inp.value)||min));
       const next=e.key==="ArrowUp"
         ? Math.min(max, Math.round((cur+step)/step)*step)
         : Math.max(min, Math.round((cur-step)/step)*step);
@@ -241,7 +245,7 @@ function NI(_label,val,min,max,_step,onChange,width="72px"){
   wrap.onclick=()=>inp.focus();
   wrap._inp=inp;
   wrap.setVal=(v)=>{inp.value=String(v);};
-  Object.defineProperty(wrap,"numVal",{get(){return parseFloat(inp.value)||min;}});
+  Object.defineProperty(wrap,"numVal",{get(){return _pf(inp.value)||min;}});
   return wrap;
 }
 
@@ -407,6 +411,7 @@ function ImgSlot(optional, onFile, onDims){
     hasFile(){return !!_currentName;},
     _restorePreview,
     _restorePreviewUrl,
+    loadFile:_load,
   };
 }
 
@@ -613,6 +618,10 @@ app.registerExtension({
           _preRunFiles: new Set(),
           soundEnabled: saved.soundEnabled!==undefined?saved.soundEnabled:true,
           extLoaders:   saved.extLoaders||false,
+          // Downscale reference images (EDIT + I2I input slots) before VAE encode.
+          // Default ON at 1 MP = the existing behaviour, so existing users see no change.
+          downscaleRef:   saved.downscaleRef!==undefined?saved.downscaleRef:true,
+          downscaleRefMP: saved.downscaleRefMP!==undefined?saved.downscaleRefMP:1.0,
           previewUrl:   null,
         };
       }
@@ -643,6 +652,7 @@ app.registerExtension({
           llmModel:S.llmModel, llmMmproj:S.llmMmproj, llmSystemPromptFile:S.llmSystemPromptFile, llmImage:S.llmImage, llmResult:S.llmResult,
           i2iImage:S.i2iImage, i2iDenoise:S.i2iDenoise, i2iResizeLonger:S.i2iResizeLonger,
           userLoras:S.userLoras, soundEnabled, extLoaders:S.extLoaders,
+          downscaleRef:S.downscaleRef, downscaleRefMP:S.downscaleRefMP,
         });
       };
 
@@ -1068,7 +1078,51 @@ app.registerExtension({
         _refreshExtInputUI();
       });
 
-      settingsOverlay.append(settHdr,modGrid,_kvNote,_baseNote,modGrid2,modGrid3,llmTitle,modGridLLM,prefTitle,soundToggle.el,advUIToggle.el,extLoadersToggle.el);
+      // ── Downscale reference images (EDIT + I2I) ──────────────────────────────
+      const _dsRow=mk("div",{display:"flex",flexDirection:"column",gap:"5px",padding:"9px 0",borderBottom:`1px solid ${C.border}`});
+      const _dsTop=mk("div",{display:"flex",alignItems:"center",justifyContent:"space-between",gap:"10px"});
+      const _dsLblWrap=mk("div",{display:"flex",alignItems:"center",gap:"8px",flex:"1",minWidth:"0"});
+      const _dsLbl=mk("span",{fontSize:"12px",color:C.text});tx(_dsLbl,"Downscale reference images to");
+      // MP number input — only enabled when the toggle is ON
+      const _dsMP=mk("input",{
+        width:"52px",textAlign:"center",background:"rgba(255,255,255,.05)",
+        border:`1px solid rgba(255,255,255,.12)`,borderRadius:"6px",
+        color:LIME,fontSize:"11px",fontWeight:"700",padding:"4px 0",outline:"none",
+        transition:"border-color .15s,opacity .15s",flexShrink:"0",
+      },{type:"number",step:"0.1",min:"0.1",max:"16",value:String(S.downscaleRefMP)});
+      const _dsMPUnit=mk("span",{fontSize:"11px",color:C.muted,flexShrink:"0"});tx(_dsMPUnit,"MP");
+      _dsLblWrap.append(_dsLbl,_dsMP,_dsMPUnit);
+      // Toggle track (reuse the same visual style as Toggle())
+      const _dsTrack=mk("div",{width:"34px",height:"18px",borderRadius:"9px",
+        background:S.downscaleRef?LIME:C.dim,cursor:"pointer",position:"relative",transition:"background .2s",flexShrink:"0"});
+      const _dsThumb=mk("div",{position:"absolute",top:"2px",left:S.downscaleRef?"16px":"2px",
+        width:"14px",height:"14px",borderRadius:"50%",background:S.downscaleRef?"#111":"#888",transition:"left .2s,background .2s"});
+      _dsTrack.appendChild(_dsThumb);
+      const _dsHint=mk("div",{fontSize:"9px",color:C.muted,lineHeight:"1.5"});
+      _dsHint.innerHTML="Shrinks the input image before it enters the model - in <b>EDIT</b> and <b>Sketch</b> modes. Lower MP = faster generation and lower VRAM, but finer details may be lost and the result can shift slightly, since the image gets resized to fit the model. Recommended if you have limited VRAM or hit out-of-memory errors on large images. Turn it <b>off</b> for maximum fidelity when your GPU can handle the full resolution.";
+      const _dsApplyEnabled=()=>{
+        const on=S.downscaleRef;
+        _dsMP.disabled=!on;
+        _dsMP.style.opacity=on?"1":"0.4";
+        _dsLbl.style.opacity=on?"1":"0.6";
+      };
+      _dsTrack.onclick=()=>{
+        S.downscaleRef=!S.downscaleRef;
+        _dsTrack.style.background=S.downscaleRef?LIME:C.dim;
+        _dsThumb.style.left=S.downscaleRef?"16px":"2px";
+        _dsThumb.style.background=S.downscaleRef?"#111":"#888";
+        _dsApplyEnabled();persist();
+      };
+      _dsMP.onfocus=()=>_dsMP.style.borderColor=LIME;
+      _dsMP.onblur=()=>{
+        let v=_pf(_dsMP.value); if(isNaN(v)||v<=0) v=1.0; v=Math.min(16,Math.max(0.1,v));
+        S.downscaleRefMP=v; _dsMP.value=String(v); _dsMP.style.borderColor="rgba(255,255,255,.12)"; persist();
+      };
+      _dsTop.append(_dsLblWrap,_dsTrack);
+      _dsRow.append(_dsTop,_dsHint);
+      _dsApplyEnabled();
+
+      settingsOverlay.append(settHdr,modGrid,_kvNote,_baseNote,modGrid2,modGrid3,llmTitle,modGridLLM,prefTitle,soundToggle.el,advUIToggle.el,extLoadersToggle.el,_dsRow);
 
       // ── Overlay helpers ───────────────────────────────────────────────────
       const openOverlay=(el)=>{
@@ -2135,8 +2189,33 @@ app.registerExtension({
       const _skSzLabel=mk("div",{fontSize:"8px",fontWeight:"700",color:LIME,letterSpacing:".07em",
         textTransform:"uppercase",flexShrink:"0"});
       tx(_skSzLabel,"Canvas");
-      const _sketchWInp=NI("W",1024,64,4096,8,()=>{},"66px");
-      const _sketchHInp=NI("H",1024,64,4096,8,()=>{},"66px");
+      let _skArLocked=false;
+      let _skArRatio=null;
+      const _skArLockBtn=mk("button",{
+        width:"20px",height:"20px",borderRadius:"4px",flexShrink:"0",
+        background:"transparent",border:`1px solid ${C.border}`,
+        color:C.muted,cursor:"pointer",outline:"none",padding:"0",
+        display:"flex",alignItems:"center",justifyContent:"center",
+        transition:"border-color .15s,color .15s,background .15s",
+      });
+      const _skLockIconOpen=`<svg viewBox="0 0 12 14" width="10" height="11" fill="currentColor"><rect x="1" y="6" width="10" height="8" rx="1.5"/><path d="M3.5 6V4a2.5 2.5 0 015 0" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>`;
+      const _skLockIconClosed=`<svg viewBox="0 0 12 14" width="10" height="11" fill="currentColor"><rect x="1" y="6" width="10" height="8" rx="1.5"/><path d="M3.5 6V4a2.5 2.5 0 015 0v2" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>`;
+      _skArLockBtn.innerHTML=_skLockIconOpen;
+      _skArLockBtn.title="Lock aspect ratio";
+      _skArLockBtn.onclick=()=>{
+        _skArLocked=!_skArLocked;
+        if(_skArLocked) _skArRatio=(_sketchWInp.numVal||1024)/(_sketchHInp.numVal||1024);
+        _skArLockBtn.style.borderColor=_skArLocked?LIME:C.border;
+        _skArLockBtn.style.color=_skArLocked?LIME:C.muted;
+        _skArLockBtn.style.background=_skArLocked?"rgba(240,255,65,.08)":"transparent";
+        _skArLockBtn.innerHTML=_skArLocked?_skLockIconClosed:_skLockIconOpen;
+      };
+      const _sketchWInp=NI("W",1024,64,4096,8,(v)=>{
+        if(_skArLocked&&_skArRatio) _sketchHInp.setVal(Math.max(64,Math.round(v/_skArRatio)));
+      },"66px");
+      const _sketchHInp=NI("H",1024,64,4096,8,(v)=>{
+        if(_skArLocked&&_skArRatio) _sketchWInp.setVal(Math.max(64,Math.round(v*_skArRatio)));
+      },"66px");
       _sketchWInp._inp.addEventListener("keydown",e=>{ if(e.key==="Tab"&&!e.shiftKey){ e.preventDefault(); _sketchHInp._inp.focus(); _sketchHInp._inp.select(); } });
       _sketchHInp._inp.addEventListener("keydown",e=>{ if(e.key==="Tab"&&e.shiftKey){ e.preventDefault(); _sketchWInp._inp.focus(); _sketchWInp._inp.select(); } });
       const _sketchXLbl=mk("button",{
@@ -2183,13 +2262,13 @@ app.registerExtension({
         if(_sketchSizeApplied){ _sketchResApplyBtn.style.background="rgba(255,255,255,.08)";_sketchResApplyBtn.style.color="rgba(255,255,255,.6)"; }
         else _sketchResApplyBtn.style.background="rgba(240,255,65,.15)";
       };
-      _sketchSizeGroup.append(_skSzLabel,_sketchWInp,_sketchXLbl,_sketchHInp,_sketchResApplyBtn);
+      _sketchSizeGroup.append(_skSzLabel,_sketchWInp,_sketchXLbl,_sketchHInp,_skArLockBtn,_sketchResApplyBtn);
 
       // _sketchColorSwatch placeholder — real swatch built in left toolbar below
       const _sketchColorSwatch=mk("div",{display:"none"});
       // _sketchSizeSlider/_sketchSizeNumInp — referenced by toolbar for sync
-      const _sketchSizeSlider=mk("input",{display:"none"},{type:"range",min:"1",max:"80",value:"8"});
-      const _sketchSizeNumInp=mk("input",{display:"none"},{type:"number",min:"1",max:"80",value:"8"});
+      const _sketchSizeSlider=mk("input",{display:"none"},{type:"range",min:"1",max:"500",value:"8"});
+      const _sketchSizeNumInp=mk("input",{display:"none"},{type:"number",min:"1",max:"500",value:"8"});
 
       // ── Zoom ─────────────────────────────────────────────────────────────
       const _mkZBtn=(t,icon)=>{
@@ -2240,6 +2319,7 @@ app.registerExtension({
       _sketchCloseBtn.onmouseenter=()=>_sketchCloseBtn.style.color="#fff";
       _sketchCloseBtn.onmouseleave=()=>_sketchCloseBtn.style.color=C.muted;
       const _closeSketch=()=>{
+        if(_sketchFullscreen) _sketchFsExit();
         _sketchOv.style.opacity="0";
         setTimeout(()=>{
           _sketchOv.style.display="none";
@@ -2257,7 +2337,54 @@ app.registerExtension({
       });
       _sketchTopCenter.append(_sketchSizeGroup,_skBtnSep(),_sketchZoomOut,_sketchZoomReset,_sketchZoomIn,_skBtnSep(),_sketchUndoBtn,_sketchClearBtn);
       const _sketchTopRight=mk("div",{display:"flex",alignItems:"center",gap:"8px",marginLeft:"auto"});
-      _sketchTopRight.append(_sketchSaveBtn,_sketchCloseBtn);
+
+      // Fullscreen toggle for sketch
+      let _sketchFullscreen=false;
+      const _sketchFsBtn=mk("button",{background:"none",border:"none",cursor:"pointer",
+        color:C.muted,padding:"2px 4px",outline:"none",display:"flex",alignItems:"center",
+        borderRadius:"4px",transition:"color .15s",flexShrink:"0"});
+      _sketchFsBtn.innerHTML=`<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>`;
+      _sketchFsBtn.title="Toggle fullscreen sketch";
+      _sketchFsBtn.onmouseenter=()=>_sketchFsBtn.style.color="#fff";
+      _sketchFsBtn.onmouseleave=()=>_sketchFsBtn.style.color=C.muted;
+      let _sketchFsOrigParent=null;
+      let _sketchFsOrigZoom=1,_sketchFsOrigPanX=0,_sketchFsOrigPanY=0;
+      const _sketchFsExit=()=>{
+        _sketchFullscreen=false;
+        if(_sketchFsOrigParent) _sketchFsOrigParent.appendChild(_sketchOv);
+        _sketchOv.style.position="absolute";
+        _sketchOv.style.inset="0";
+        _sketchOv.style.zIndex="270";
+        _sketchToolbar.style.zoom="";
+        _sketchLayersPanel.style.zoom="";
+        _sketchTopBar.style.zoom="";
+        _sketchShortcutBar.style.zoom="";
+        _sketchCloseBtn.style.display="";
+        requestAnimationFrame(()=>_sketchDoFit());
+      };
+      _sketchFsBtn.onclick=()=>{
+        _sketchFullscreen=!_sketchFullscreen;
+        if(_sketchFullscreen){
+          _sketchFsOrigZoom=_sketchZoom;
+          _sketchFsOrigPanX=_sketchPanX;
+          _sketchFsOrigPanY=_sketchPanY;
+          _sketchFsOrigParent=_sketchOv.parentElement;
+          document.body.appendChild(_sketchOv);
+          _sketchOv.style.position="fixed";
+          _sketchOv.style.inset="0";
+          _sketchOv.style.zIndex="99999";
+          _sketchToolbar.style.zoom="2";
+          _sketchLayersPanel.style.zoom="2";
+          _sketchTopBar.style.zoom="2";
+          _sketchShortcutBar.style.zoom="2";
+          _sketchCloseBtn.style.display="none";
+          requestAnimationFrame(()=>_sketchDoFit());
+        } else {
+          _sketchFsExit();
+        }
+      };
+
+      _sketchTopRight.append(_sketchSaveBtn,_sketchFsBtn,_sketchCloseBtn);
       _sketchTopBar.append(_sketchTopCenter,_sketchTopRight);
 
       // ── Tool buttons ──────────────────────────────────────────────────────
@@ -2309,9 +2436,9 @@ app.registerExtension({
         return row;
       };
 
-      const _skSizeRow=_mkSliderRow("Size",1,200,8,(v)=>{
+      const _skSizeRow=_mkSliderRow("Size",1,500,8,(v)=>{
         _sketchSize=v;
-        _sketchSizeSlider.value=String(Math.min(v,200));_sketchSizeNumInp.value=String(v);
+        _sketchSizeSlider.value=String(Math.min(v,500));_sketchSizeNumInp.value=String(v);
       });
       // Allow typing beyond slider max — number input has no hard cap
       _skSizeRow.querySelector("input[type=number]").removeAttribute("max");
@@ -2328,9 +2455,9 @@ app.registerExtension({
       const _sketchSetSize=(v)=>{
         v=Math.max(1,Math.min(2000,parseInt(v)||1));
         _sketchSize=v;
-        _sketchSizeSlider.value=String(Math.min(v,200));
+        _sketchSizeSlider.value=String(Math.min(v,500));
         _sketchSizeNumInp.value=String(v);
-        _skSizeRow._set(Math.min(v,200));
+        _skSizeRow._set(Math.min(v,500));
       };
       _sketchSizeSlider.oninput=()=>_sketchSetSize(_sketchSizeSlider.value);
       _sketchSizeNumInp.oninput=()=>_sketchSetSize(_sketchSizeNumInp.value);
@@ -2356,6 +2483,8 @@ app.registerExtension({
         _skFgSwatch.style.background=_sketchColor;
         _sketchColorSwatch.style.background=_sketchColor;
       };
+      // Release focus after picking so keyboard shortcuts keep working
+      _sketchColorNative.onchange=()=>{ _sketchColorNative.blur(); };
 
       // ── Stroke/Fill toggle ────────────────────────────────────────────────
       const _mkSFBtnInline=(lbl)=>{
@@ -3247,7 +3376,7 @@ app.registerExtension({
       };
       _mkZoomBtnHandler(_sketchZoomIn,1.25);
       _mkZoomBtnHandler(_sketchZoomOut,1/1.25);
-      _sketchZoomReset.onclick=()=>{
+      const _sketchDoFit=()=>{
         const vw=_sketchViewport.offsetWidth,vh=_sketchViewport.offsetHeight;
         const scale=Math.min(1,(vw-40)/_sketchCanvasW,(vh-40)/_sketchCanvasH);
         _sketchZoom=scale;
@@ -3255,6 +3384,7 @@ app.registerExtension({
         _sketchPanY=Math.round((vh-_sketchCanvasH*scale)/2);
         _sketchApplyTransform();
       };
+      _sketchZoomReset.onclick=_sketchDoFit;
 
       // Panning state
       let _sketchPanning=false,_sketchPanStartX=0,_sketchPanStartY=0,_sketchPanOX=0,_sketchPanOY=0;
@@ -3413,7 +3543,7 @@ app.registerExtension({
         if(_sketchTool!=="move") { _sketchCursorEl.innerHTML=""; _sketchCursorEl.style.display="block"; }
         const brushTools=["brush","eraser"];
         if(brushTools.includes(_sketchTool)){
-          const sz=Math.max(2,_sketchSize*_sketchZoom);
+          const sz=Math.max(2,(_sketchSize/2)*_sketchZoom);
           _sketchCursorEl.style.width=sz+"px";_sketchCursorEl.style.height=sz+"px";
           _sketchCursorEl.style.borderRadius="50%";
           _sketchCursorEl.style.background=_sketchTool==="eraser"?"rgba(255,255,255,.2)":"transparent";
@@ -4111,10 +4241,14 @@ app.registerExtension({
           return;
         }
         const tag=(e.target||{}).tagName||"";
-        if(tag==="INPUT"||tag==="TEXTAREA") return;
         if((e.ctrlKey||e.metaKey)&&(e.key==="z"||e.key==="Z")){
           e.preventDefault();e.stopPropagation();_sketchDoUndo();return;
         }
+        // Block shortcuts only when typing in a text field. Color picker and
+        // range sliders keep focus after use but don't need keyboard — let
+        // shortcuts (b/e/r/c/v…) keep working after picking a color.
+        const _it=(e.target||{}).type||"";
+        if((tag==="INPUT"&&_it!=="color"&&_it!=="range")||tag==="TEXTAREA") return;
         if(e.ctrlKey||e.metaKey||e.altKey) return;
         switch(e.key){
           case"b":case"B":e.preventDefault();e.stopPropagation();_sketchSetTool("brush");break;
@@ -6417,18 +6551,21 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       const promptCap=cap("Prompt");
 
       // ── LoRA overlay ──────────────────────────────────────────────────────
+      // Overlay covers the node widget (like the prompt/sketch overlays), not the whole screen.
       const _ulOverlay=mk("div",{
-        position:"fixed",inset:"0",zIndex:"99998",display:"none",
+        position:"absolute",inset:"0",zIndex:"250",display:"none",
         alignItems:"center",justifyContent:"center",
+        padding:"14px",boxSizing:"border-box",
       });
-      const _ulBg=mk("div",{position:"absolute",inset:"0",background:"rgba(0,0,0,.7)"});
+      const _ulBg=mk("div",{position:"absolute",inset:"0",background:"rgba(0,0,0,.6)"});
       const _ulPanel=mk("div",{
         position:"relative",
         background:"linear-gradient(145deg,#111 0%,#0d0d0d 100%)",
         border:`1px solid rgba(240,255,65,.18)`,
-        borderRadius:"16px",padding:"20px 22px 22px",width:"520px",
+        borderRadius:"16px",padding:"18px 20px 20px",width:"100%",maxWidth:"560px",
+        maxHeight:"100%",
         boxShadow:"0 20px 60px rgba(0,0,0,.95),inset 0 1px 0 rgba(255,255,255,.04)",
-        display:"flex",flexDirection:"column",gap:"16px",
+        display:"flex",flexDirection:"column",gap:"14px",boxSizing:"border-box",
       });
       const _ulPHdr=mk("div",{display:"flex",alignItems:"center",gap:"8px"});
       const _ulPTitle=mk("div",{fontSize:"12px",fontWeight:"700",color:"#fff",flex:"1",
@@ -6439,8 +6576,9 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       tx(_ulPClose,"×");
       _ulPClose.onmouseenter=()=>_ulPClose.style.color="#fff";
       _ulPClose.onmouseleave=()=>_ulPClose.style.color=C.muted;
-      _ulPClose.onclick=()=>{ _ulOverlay.style.display="none"; hideDimmer(); };
-      _ulBg.onclick=()=>{ _ulOverlay.style.display="none"; hideDimmer(); };
+      const _ulCloseFn=()=>{ _ulOverlay.style.display="none"; };
+      _ulPClose.onclick=_ulCloseFn;
+      _ulBg.onclick=_ulCloseFn;
       const _ulRefreshBtn=mk("button",{background:"none",border:"none",cursor:"pointer",
         color:C.muted,fontSize:"13px",lineHeight:"1",padding:"0 6px 0 0",outline:"none",flexShrink:"0"});
       tx(_ulRefreshBtn,"↻");
@@ -6451,37 +6589,51 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       _ulPHdr.append(_ulPTitle,_ulRefreshBtn,_ulPClose);
       const _ulPSub=mk("div",{width:"100%",height:"1px",background:"rgba(240,255,65,.10)",marginTop:"-6px"});
       const _ulRows=mk("div",{display:"flex",flexDirection:"column",gap:"10px",
-        maxHeight:"380px",overflowY:"auto",paddingRight:"4px"});
+        overflowY:"auto",overflowX:"hidden",flex:"1 1 auto",minHeight:"0",paddingRight:"4px"});
 
-      const _mkULRow=(loraObj)=>{
-        const row=mk("div",{display:"flex",flexDirection:"column",gap:"4px"});
-        row._lora=loraObj;
-        const rowLbl=mk("div",{fontSize:"7px",color:"rgba(240,255,65,.5)",fontWeight:"700",
-          letterSpacing:".1em",textTransform:"uppercase"});
-        tx(rowLbl,"SLOT ?"); // real label set by _ulReindex()
-        row._lbl=rowLbl;
-        const rowCtrl=mk("div",{display:"flex",alignItems:"center",gap:"6px"});
+      const _UL_DEFAULT=3;   // default number of LoRA slots
+      const _UL_MAX=6;       // maximum slots the user can add
 
-        // Trigger words area — shown below the control row
-        const trigRow=mk("div",{display:"none",flexDirection:"column",gap:"5px",
-          marginTop:"2px",padding:"8px 10px",background:"rgba(240,255,65,.04)",
-          border:`1px solid rgba(240,255,65,.12)`,borderRadius:"8px",
+      const _mkULRow=(idx)=>{
+        const row=mk("div",{display:"flex",flexDirection:"column",gap:"6px",
+          paddingBottom:"12px",borderBottom:`1px solid rgba(255,255,255,.06)`});
+        const rowCtrl=mk("div",{display:"flex",alignItems:"center",gap:"7px"});
+        // Slot number badge — sits in front of the dropdown
+        const _rowNum=mk("span",{
+          display:"inline-flex",alignItems:"center",justifyContent:"center",
+          width:"17px",height:"17px",borderRadius:"50%",fontSize:"8px",fontWeight:"700",
+          background:"rgba(240,255,65,.1)",color:LIME,flexShrink:"0",
         });
-        const trigTopRow=mk("div",{display:"flex",alignItems:"center",gap:"6px"});
-        const trigLbl=mk("div",{fontSize:"9px",fontWeight:"600",color:C.muted,whiteSpace:"nowrap",flexShrink:"0"});
-        tx(trigLbl,"Trigger words:");
+        tx(_rowNum,String(idx+1));
+
+        // Trigger words area — shown below the control row (subtle, not a heavy block)
+        const trigRow=mk("div",{display:"none",flexDirection:"column",gap:"6px",
+          marginTop:"1px",paddingLeft:"24px",
+        });
+        const trigTopRow=mk("div",{display:"flex",alignItems:"baseline",gap:"6px"});
+        const trigLbl=mk("div",{fontSize:"8px",fontWeight:"700",color:C.muted,whiteSpace:"nowrap",
+          flexShrink:"0",letterSpacing:".06em",textTransform:"uppercase",opacity:".8"});
+        tx(trigLbl,"Trigger");
         const trigVal=mk("div",{fontSize:"10px",color:LIME,flex:"1",minWidth:"0",
           wordBreak:"break-word",lineHeight:"1.4"});
         tx(trigVal,"—");
-        trigTopRow.append(trigLbl,trigVal);
+        // Edit pencil — shown only when a trigger value exists, toggles the input row
+        const trigEditBtn=mk("button",{
+          background:"none",border:"none",cursor:"pointer",color:C.muted,
+          padding:"0 2px",lineHeight:"1",flexShrink:"0",outline:"none",
+          transition:"color .15s",display:"none",fontSize:"10px",
+        });
+        trigEditBtn.innerHTML=`<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>`;
+        trigEditBtn.title="Edit trigger words";
+        trigEditBtn.onmouseenter=()=>trigEditBtn.style.color=LIME;
+        trigEditBtn.onmouseleave=()=>trigEditBtn.style.color=C.muted;
+        trigTopRow.append(trigLbl,trigVal,trigEditBtn);
 
         // Custom trigger input row
-        const trigCustomRow=mk("div",{display:"flex",alignItems:"center",gap:"5px",marginTop:"2px"});
-        const trigCustomLbl=mk("div",{fontSize:"8px",color:C.muted,whiteSpace:"nowrap",flexShrink:"0"});
-        tx(trigCustomLbl,"Custom:");
+        const trigCustomRow=mk("div",{display:"flex",alignItems:"center",gap:"5px"});
         const trigCustomInp=mk("input",{
-          flex:"1",background:"rgba(255,255,255,.06)",border:`1px solid rgba(255,255,255,.12)`,
-          borderRadius:"5px",color:C.text,fontSize:"10px",padding:"3px 7px",
+          flex:"1",background:"rgba(255,255,255,.04)",border:`1px solid rgba(255,255,255,.1)`,
+          borderRadius:"6px",color:C.text,fontSize:"10px",padding:"5px 9px",
           outline:"none",transition:"border-color .15s",
         },{type:"text",placeholder:"Add custom trigger words…"});
         trigCustomInp.onfocus=()=>trigCustomInp.style.borderColor=LIME;
@@ -6499,14 +6651,24 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
           if(!name||name==="none") return;
           const txt=trigCustomInp.value.trim();
           await _saveCustomTrigger(name,txt);
-          // Update displayed value and clear input field
+          // Update displayed value and collapse the input row
           tx(trigVal,txt||"—");
           trigCustomInp.value="";
           trigSaveBtn.style.color=LIME; tx(trigSaveBtn,"Saved ✓");
           setTimeout(()=>{ trigSaveBtn.style.color=C.muted; tx(trigSaveBtn,"Save"); },1500);
+          _setTrigEditMode(false);
         };
-        trigCustomRow.append(trigCustomLbl,trigCustomInp,trigSaveBtn);
+        trigCustomRow.append(trigCustomInp,trigSaveBtn);
         trigRow.append(trigTopRow,trigCustomRow);
+
+        // The input row is never shown automatically — only after clicking the pencil.
+        // The trigger value (or "—") is always visible under the dropdown, so the user
+        // already sees whether one is set; the pencil just opens the editor.
+        const _setTrigEditMode=(editing)=>{
+          trigCustomRow.style.display=editing?"flex":"none";
+          trigEditBtn.style.display=editing?"none":"inline-flex";
+        };
+        trigEditBtn.onclick=()=>{ trigCustomInp.value=(trigVal.textContent==="—"||trigVal.textContent==="…")?"":trigVal.textContent; _setTrigEditMode(true); trigCustomInp.focus(); };
 
         // Load and display trigger words when lora changes
         const _refreshTrigWords=async(loraName)=>{
@@ -6526,71 +6688,199 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
               tx(trigVal,(d.ok&&d.triggers?.length)?d.triggers.join(", "):"—");
             }catch(e){ tx(trigVal,"—"); }
           }
+          // Collapse to display mode if a value exists, else show the input
+          _setTrigEditMode(false);
         };
 
         const ulDD=DD(["none"],"none",v=>{
           const has=v&&v!=="none";
-          row._lora.name=has?v:"";
-          if(!has){ row._lora.strength=0; ulStr.value="0"; }
-          else if(row._lora.strength===0){ row._lora.strength=1; ulStr.value="1"; }
+          S.userLoras[idx].name=has?v:"";
+          if(!has){
+            S.userLoras[idx].strength=0; ulStr.value="0";
+          } else {
+            // Selecting a LoRA: default to 1 only when strength is unset/zero
+            // (negative values are valid — concept sliders — so keep those),
+            // then always sync the input to the stored value, since an empty slot
+            // shows "0" while its state strength may already be 1.
+            const cur=+(S.userLoras[idx].strength);
+            if(!isFinite(cur)||cur===0) S.userLoras[idx].strength=1;
+            ulStr.value=String(S.userLoras[idx].strength);
+          }
           _ulUpdateBtn();persist();
           _refreshTrigWords(v);
         });
         ulDD.el.style.flex="1";ulDD.el.style.minWidth="0";
 
+        // type:"text" + inputmode:"decimal" so the numpad "." is accepted regardless
+        // of OS locale (type:"number" rejects "." on comma-locales). _pf() parses both.
         const ulStr=mk("input",{
-          width:"44px",textAlign:"center",background:"rgba(255,255,255,.06)",
-          border:`1px solid rgba(255,255,255,.1)`,borderRadius:"6px",
-          color:LIME,fontSize:"10px",fontWeight:"700",
-          padding:"5px 0",outline:"none",transition:"border-color .15s",flexShrink:"0",
-        },{type:"number",step:"0.05",value:String(row._lora.name&&row._lora.name!=="none"?row._lora.strength||1:0)});
-        ulStr.onfocus=()=>ulStr.style.borderColor=LIME;
-        ulStr.onblur=()=>{ row._lora.strength=isNaN(+ulStr.value)?1:+ulStr.value;
-          ulStr.value=String(row._lora.strength);persist(); };
-        ulStr.oninput=()=>{ row._lora.strength=+ulStr.value||0;persist(); };
+          width:"46px",textAlign:"center",background:"rgba(255,255,255,.05)",
+          border:`1px solid rgba(255,255,255,.1)`,borderRadius:"7px",
+          color:LIME,fontSize:"11px",fontWeight:"700",cursor:"ew-resize",
+          padding:"6px 0",outline:"none",transition:"border-color .15s",flexShrink:"0",
+        },{type:"text",inputMode:"decimal",value:String(S.userLoras[idx].name&&S.userLoras[idx].name!=="none"?S.userLoras[idx].strength||1:0)});
+        ulStr.onfocus=()=>{ ulStr.style.borderColor=LIME; ulStr.select(); };
+        ulStr.onblur=()=>{ const p=_pf(ulStr.value); S.userLoras[idx].strength=isNaN(p)?1:p;
+          ulStr.value=String(S.userLoras[idx].strength);persist(); };
+        ulStr.oninput=()=>{ S.userLoras[idx].strength=_pf(ulStr.value)||0;persist(); };
+
+        // Drag-on-number: hold and drag horizontally to scrub the strength value,
+        // like native ComfyUI number widgets. A plain click (no drag) still focuses
+        // the field for typing — we only hijack the pointer once a real drag starts.
+        (()=>{
+          let armed=false,dragging=false,justDragged=false,startX=0,startVal=0,pid=0;
+          const STEP=0.01;       // value change per pixel
+          const THRESHOLD=3;     // px before it counts as a drag (vs a click)
+          ulStr.addEventListener("pointerdown",(e)=>{
+            armed=true;dragging=false;startX=e.clientX;pid=e.pointerId;
+            startVal=_pf(ulStr.value); if(isNaN(startVal)) startVal=0;
+            // Capture the pointer up front so every move/up is delivered even once the
+            // cursor leaves this 46px-wide box. Without it, pre-threshold pointermove
+            // only fires while over the field, so fast or edge-started drags exit the
+            // box before crossing THRESHOLD and the scrub silently no-ops (the "sometimes
+            // works" bug). Capture doesn't preventDefault, so a plain click still focuses
+            // the field for typing; the drag only kicks in past THRESHOLD.
+            try{ ulStr.setPointerCapture(pid); }catch(_){}
+          });
+          ulStr.addEventListener("pointermove",(e)=>{
+            if(!armed) return;
+            const dx=e.clientX-startX;
+            if(!dragging){
+              if(Math.abs(dx)<THRESHOLD) return; // still within click tolerance
+              dragging=true;
+              if(document.activeElement===ulStr) ulStr.blur(); // leave edit mode when a drag begins
+            }
+            let v=startVal+dx*STEP;
+            v=Math.round(v*100)/100;
+            ulStr.value=String(v);
+            S.userLoras[idx].strength=v; persist();
+          });
+          ulStr.addEventListener("pointerup",()=>{
+            if(!armed) return;
+            armed=false;
+            try{ ulStr.releasePointerCapture(pid); }catch(_){} // always release (captured on every pointerdown)
+            if(dragging){
+              ulStr.blur();           // committed via drag — don't enter edit mode
+              justDragged=true;       // swallow the trailing click
+              setTimeout(()=>{ justDragged=false; },0);
+            }
+            dragging=false;
+          });
+          ulStr.addEventListener("pointercancel",()=>{ try{ ulStr.releasePointerCapture(pid); }catch(_){} armed=false;dragging=false; });
+          // Swallow the click that immediately follows a real drag (so it doesn't focus)
+          ulStr.addEventListener("click",(e)=>{ if(justDragged){ e.preventDefault();e.stopPropagation(); } });
+        })();
 
         const ulClr=mk("button",{
-          background:"rgba(255,80,80,.08)",border:"1px solid rgba(255,80,80,.25)",borderRadius:"6px",
-          cursor:"pointer",color:"rgba(255,100,100,.7)",fontSize:"9px",fontWeight:"700",
-          padding:"5px 8px",outline:"none",transition:"all .15s",flexShrink:"0",
+          background:"rgba(255,255,255,.05)",border:"1px solid rgba(255,255,255,.12)",borderRadius:"7px",
+          cursor:"pointer",color:C.muted,fontSize:"9px",fontWeight:"700",letterSpacing:".04em",
+          padding:"6px 9px",outline:"none",transition:"all .15s",flexShrink:"0",
         });
         tx(ulClr,"CLR");
-        ulClr.onmouseenter=()=>{ ulClr.style.background="rgba(255,80,80,.18)";ulClr.style.color="#ff6666"; };
-        ulClr.onmouseleave=()=>{ ulClr.style.background="rgba(255,80,80,.08)";ulClr.style.color="rgba(255,100,100,.7)"; };
+        ulClr.onmouseenter=()=>{ ulClr.style.background="rgba(255,80,80,.14)";ulClr.style.borderColor="rgba(255,80,80,.3)";ulClr.style.color="#ff7777"; };
+        ulClr.onmouseleave=()=>{ ulClr.style.background="rgba(255,255,255,.05)";ulClr.style.borderColor="rgba(255,255,255,.12)";ulClr.style.color=C.muted; };
         ulClr.onclick=()=>{
-          row._lora.name="";row._lora.strength=0;ulDD.set("none");ulStr.value="0";
-          _ulUpdateBtn();persist();
+          S.userLoras[idx]={name:"",strength:0};ulDD.set("none");ulStr.value="0";
           trigRow.style.display="none";
+          _ulUpdateBtn();persist();
         };
 
-        // REMOVE button — removes the entire row from the panel
-        const ulRem=mk("button",{
-          background:"rgba(255,80,80,.06)",border:"1px solid rgba(255,80,80,.18)",
-          borderRadius:"6px",cursor:"pointer",color:"rgba(255,100,100,.5)",
-          fontSize:"9px",fontWeight:"700",padding:"5px 8px",outline:"none",
-          transition:"all .15s",flexShrink:"0",
-        });
-        tx(ulRem,"×");ulRem.title="Remove this LoRA slot";
-        ulRem.onmouseenter=()=>{ulRem.style.background="rgba(255,80,80,.14)";ulRem.style.color="#ff6666";};
-        ulRem.onmouseleave=()=>{ulRem.style.background="rgba(255,80,80,.06)";ulRem.style.color="rgba(255,100,100,.5)";};
-        ulRem.onclick=()=>_removeULRow(row);
-        row._remBtn=ulRem;
-
-        rowCtrl.append(ulDD.el,ulStr,ulClr,ulRem);
-        row.append(rowLbl,rowCtrl,trigRow);
-        row._dd=ulDD;row._str=ulStr;row._lora=loraObj;row._lbl=rowLbl;
+        rowCtrl.append(_rowNum,ulDD.el,ulStr,ulClr);
+        row.append(rowCtrl,trigRow);
+        row._dd=ulDD;row._str=ulStr;
+        // Clear the slot's UI completely, including the trigger row (used on restore).
+        row._reset=()=>{ ulDD.set("none"); ulStr.value="0"; trigRow.style.display="none"; };
+        row._refreshTrig=_refreshTrigWords;
 
         // Restore trigger words display if lora already selected
-        if(row._lora.name&&row._lora.name!=="none"){
-          _refreshTrigWords(row._lora.name);
+        if(S.userLoras[idx].name&&S.userLoras[idx].name!=="none"){
+          _refreshTrigWords(S.userLoras[idx].name);
         }
         return row;
       };
-      const _ulRowEls=S.userLoras.map(loraObj=>{
-        const row=_mkULRow(loraObj);
-        return row;
+      // Dynamic LoRA slots: default 3, user can add up to _UL_MAX.
+      let _ulRowEls=[];
+      let _ulAddBtn=null, _ulRemoveBtn=null;  // assigned below; declared here for _ulRebuildRows
+      const _ulSyncBtnRow=()=>{
+        if(_ulAddBtn) _ulAddBtn.style.display=S.userLoras.length>=_UL_MAX?"none":"flex";
+        if(_ulRemoveBtn) _ulRemoveBtn.style.display=S.userLoras.length>_UL_DEFAULT?"flex":"none";
+      };
+      // Clamp restored state to [_UL_DEFAULT, _UL_MAX]
+      while(S.userLoras.length<_UL_DEFAULT) S.userLoras.push({name:"",strength:1.0});
+      if(S.userLoras.length>_UL_MAX) S.userLoras.length=_UL_MAX;
+
+      const _ulRebuildRows=()=>{
+        _ulRows.innerHTML="";
+        _ulRowEls=S.userLoras.map((_,i)=>_mkULRow(i));
+        _ulRowEls.forEach(r=>_ulRows.appendChild(r));
+        _ulSyncBtnRow();
+      };
+
+      // Re-populate every slot's dropdown from the current model list (used after
+      // adding/removing a slot so freshly-built rows show the available LoRAs).
+      // Never wipe a saved name when the model list is empty (e.g. models not loaded
+      // yet) — that would silently drop the user's selections in the other slots.
+      const _ulSyncSlotsToModels=()=>{
+        const haveList=Array.isArray(_loraList)&&_loraList.length>0;
+        const loraOpts=["none",...(_loraList||[])];
+        _ulRowEls.forEach((r,i)=>{
+          r._dd.updateItems(loraOpts);
+          const saved=S.userLoras[i]?.name;
+          if(saved&&saved!=="none"){
+            const nd=(s)=>s.replace(/\\/g,"/").toLowerCase();
+            const match=loraOpts.find(o=>nd(o)===nd(saved))||
+              loraOpts.find(o=>nd(o).split("/").pop()===nd(saved).split("/").pop());
+            if(match){ r._dd.set(match); S.userLoras[i].name=match; }
+            else if(haveList){ r._dd.set("none"); S.userLoras[i].name=""; }
+            // else: list not loaded — keep the saved name, leave the dropdown as-is
+          } else r._dd.set("none");
+        });
+      };
+
+      const _ulAddSlot=()=>{
+        if(S.userLoras.length>=_UL_MAX) return;
+        S.userLoras.push({name:"",strength:1.0});
+        _ulRebuildRows();
+        _ulSyncSlotsToModels();
+        persist();
+      };
+
+      const _ulRemoveSlot=()=>{
+        if(S.userLoras.length<=_UL_DEFAULT) return;
+        S.userLoras.pop();
+        _ulRebuildRows();
+        _ulSyncSlotsToModels();
+        _ulUpdateBtn();persist();
+      };
+
+      _ulRebuildRows();
+
+      // Add / Remove-last slot buttons — sit together in one row below the slots
+      const _ulBtnRow=mk("div",{display:"flex",gap:"8px"});
+      _ulAddBtn=mk("button",{
+        flex:"1",display:"flex",alignItems:"center",justifyContent:"center",gap:"6px",
+        background:"rgba(240,255,65,.06)",border:`1px dashed rgba(240,255,65,.3)`,
+        borderRadius:"8px",cursor:"pointer",color:LIME,fontSize:"10px",fontWeight:"700",
+        letterSpacing:".05em",padding:"8px",outline:"none",transition:"all .15s",
       });
-      _ulRowEls.forEach(r=>_ulRows.appendChild(r));
+      tx(_ulAddBtn,"+ Add slot");
+      _ulAddBtn.onmouseenter=()=>{ _ulAddBtn.style.background="rgba(240,255,65,.12)";_ulAddBtn.style.borderColor=LIME; };
+      _ulAddBtn.onmouseleave=()=>{ _ulAddBtn.style.background="rgba(240,255,65,.06)";_ulAddBtn.style.borderColor="rgba(240,255,65,.3)"; };
+      _ulAddBtn.onclick=_ulAddSlot;
+
+      _ulRemoveBtn=mk("button",{
+        flex:"1",display:"flex",alignItems:"center",justifyContent:"center",gap:"6px",
+        background:"rgba(255,80,80,.05)",border:`1px dashed rgba(255,80,80,.25)`,
+        borderRadius:"8px",cursor:"pointer",color:"rgba(255,120,120,.8)",fontSize:"10px",fontWeight:"700",
+        letterSpacing:".05em",padding:"8px",outline:"none",transition:"all .15s",
+      });
+      tx(_ulRemoveBtn,"− Remove last slot");
+      _ulRemoveBtn.onmouseenter=()=>{ _ulRemoveBtn.style.background="rgba(255,80,80,.12)";_ulRemoveBtn.style.borderColor="rgba(255,80,80,.45)";_ulRemoveBtn.style.color="#ff8888"; };
+      _ulRemoveBtn.onmouseleave=()=>{ _ulRemoveBtn.style.background="rgba(255,80,80,.05)";_ulRemoveBtn.style.borderColor="rgba(255,80,80,.25)";_ulRemoveBtn.style.color="rgba(255,120,120,.8)"; };
+      _ulRemoveBtn.onclick=_ulRemoveSlot;
+
+      _ulBtnRow.append(_ulAddBtn,_ulRemoveBtn);
+      _ulSyncBtnRow();
 
       // Info note at bottom of panel
       const _ulInfoNote=mk("div",{
@@ -6600,22 +6890,32 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       });
       tx(_ulInfoNote,"✦ Trigger words are applied automatically if saved and set for the selected LoRA.");
 
-      // "Add Slot" button inside panel — hidden when at MAX_LORA_SLOTS
-      const _ulAddRowBtnRow=mk("div",{display:"flex",justifyContent:"center",paddingTop:"4px"});
-      const _ulAddRowBtn=mk("button",{
-        background:"rgba(240,255,65,.06)",border:"1px dashed rgba(240,255,65,.25)",
-        borderRadius:"8px",cursor:"pointer",color:C.muted,fontSize:"10px",
-        fontWeight:"700",padding:"6px 16px",outline:"none",transition:"all .15s",width:"100%",
+      // OK button — confirm/close the panel (Enter also closes it)
+      const _ulOkBtn=mk("button",{
+        alignSelf:"flex-end",background:LIME,border:"none",borderRadius:"8px",
+        color:"#0a0a0a",fontSize:"11px",fontWeight:"700",letterSpacing:".06em",
+        padding:"8px 22px",cursor:"pointer",outline:"none",transition:"filter .12s",
       });
-      tx(_ulAddRowBtn,"+ Add Slot");
-      _ulAddRowBtn.onmouseenter=()=>{_ulAddRowBtn.style.background="rgba(240,255,65,.12)";_ulAddRowBtn.style.color=LIME;_ulAddRowBtn.style.borderColor=LIME;};
-      _ulAddRowBtn.onmouseleave=()=>{_ulAddRowBtn.style.background="rgba(240,255,65,.06)";_ulAddRowBtn.style.color=C.muted;_ulAddRowBtn.style.borderColor="rgba(240,255,65,.25)";};
-      _ulAddRowBtn.onclick=()=>_addULRow();
-      _ulAddRowBtnRow.appendChild(_ulAddRowBtn);
+      tx(_ulOkBtn,"OK");
+      _ulOkBtn.onmouseenter=()=>_ulOkBtn.style.filter="brightness(1.1)";
+      _ulOkBtn.onmouseleave=()=>_ulOkBtn.style.filter="";
+      _ulOkBtn.onclick=_ulCloseFn;
 
-      _ulPanel.append(_ulPHdr,_ulPSub,_ulRows,_ulAddRowBtnRow,_ulInfoNote);
+      _ulPanel.append(_ulPHdr,_ulPSub,_ulRows,_ulBtnRow,_ulInfoNote,_ulOkBtn);
       _ulOverlay.append(_ulBg,_ulPanel);
       root.appendChild(_ulOverlay);
+
+      // Enter / Escape close the panel (unless focus is in a text field that needs Enter)
+      document.addEventListener("keydown",(e)=>{
+        if(_ulOverlay.style.display==="none") return;
+        if(e.key==="Escape"){ e.preventDefault();e.stopPropagation();_ulCloseFn();return; }
+        if(e.key!=="Enter") return;
+        const t=e.target||{};
+        if(t.tagName==="TEXTAREA") return;
+        if(t.tagName==="INPUT"&&(t.type==="text"||t.type==="search")) return;
+        e.preventDefault();e.stopPropagation();
+        _ulCloseFn();
+      },{capture:true});
 
       // ── Collect trigger words for all active LoRAs at generate time ────────
       const _buildPromptWithTriggers=async(basePrompt)=>{
@@ -6659,7 +6959,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       _ulBtn.append(_ulBtnIco,_ulBtnTxt,_ulBtnBadge);
       _ulBtn.onmouseenter=()=>{ _ulBtn.style.background="linear-gradient(135deg,rgba(240,255,65,.18),rgba(240,255,65,.08))";_ulBtn.style.borderColor=LIME;_ulBtn.style.boxShadow="0 0 8px rgba(240,255,65,.12)"; };
       _ulBtn.onmouseleave=()=>{ _ulBtn.style.background="linear-gradient(135deg,rgba(240,255,65,.10),rgba(240,255,65,.04))";_ulBtn.style.borderColor="rgba(240,255,65,.35)";_ulBtn.style.boxShadow="0 0 0 0 rgba(240,255,65,0)"; };
-      _ulBtn.onclick=()=>{ _ulOverlay.style.display="flex";showDimmer(); };
+      _ulBtn.onclick=()=>{ _ulOverlay.style.display="flex"; };
 
       const _ulUpdateBtn=()=>{
         const n=S.userLoras.filter(l=>l.name&&l.name!=="none").length;
@@ -6670,46 +6970,6 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       };
       _ulUpdateBtn();
 
-      // ── Dynamic LoRA slot helpers ───────────────────────────────────────────
-      const MAX_LORA_SLOTS=20;
-
-      const _ulReindex=()=>{
-        _ulRowEls.forEach((r,i)=>{
-          r._idx=i;
-          if(r._lbl) tx(r._lbl,`SLOT ${i+1}`);
-          if(r._remBtn) r._remBtn.style.display=_ulRowEls.length<=1?"none":"";
-        });
-        _ulAddRowBtnRow.style.display=_ulRowEls.length>=MAX_LORA_SLOTS?"none":"flex";
-      };
-
-      const _addULRow=()=>{
-        if(_ulRowEls.length>=MAX_LORA_SLOTS) return;
-        const lora={name:"",strength:1.0};
-        S.userLoras.push(lora);
-        const row=_mkULRow(lora);
-        if(_loraList.length) row._dd.updateItems(["none",..._loraList]);
-        row._idx=_ulRowEls.length;
-        _ulRowEls.push(row);
-        _ulRows.appendChild(row);
-        _ulReindex();
-        _ulUpdateBtn();
-        persist();
-      };
-
-      const _removeULRow=(row)=>{
-        if(_ulRowEls.length<=1) return;
-        const idx=_ulRowEls.indexOf(row);
-        if(idx===-1) return;
-        row.remove();
-        _ulRowEls.splice(idx,1);
-        S.userLoras.splice(idx,1);
-        _ulReindex();
-        _ulUpdateBtn();
-        persist();
-      };
-
-      // Run initial reindex so REM buttons reflect row count
-      _ulReindex();
 
       // ── Expand prompt button — identical style to LTX node ────────────────
       const _promptExpandBtn=mk("button",{
@@ -8305,7 +8565,12 @@ ${base}`;
           set("FKI2I:img","image",   S.i2iImage||"placeholder.png");
           set("FK:86","filename_prefix","one-node-flux-2-klein/FK");
 
-          // Resize input image by longer side if enabled
+          // Resize input image by longer side if enabled (explicit user override).
+          // NOTE: the global "downscale reference" toggle is intentionally NOT applied
+          // in I2I — here the latent IS the input image (img2img with denoise < 1),
+          // so the encoded size also defines the OUTPUT size. Shrinking it would shrink
+          // the result. Output size is therefore driven by the size badge or this
+          // longer-side resize only.
           if(S.i2iResizeLonger>0){
             const dims=_i2iDims._getDims();
             if(dims.w&&dims.h){
@@ -8417,6 +8682,29 @@ ${base}`;
               set(WF.sampler,"positive",[WF.refPos1,0]);
               set(WF.sampler,"negative",[WF.refNeg1,0]);
             }
+
+            // Reference downscale toggle — applies to EDIT and SKETCH (both send
+            // the input/canvas into the VAE encoder through this workflow).
+            if(S.downscaleRef){
+              // ON: route VAE encode through the scale node and set megapixels.
+              // (Sketch + img1-source paths normally bypass the scale node, so we
+              // must re-wire the encoder onto it here, not just set megapixels.)
+              const mp=+(S.downscaleRefMP)>0?+(S.downscaleRefMP):1.0;
+              if(prompt[WF.scaleImg1]){
+                prompt[WF.scaleImg1].inputs.megapixels=mp;
+                if(prompt[WF.vaeEnc1]) prompt[WF.vaeEnc1].inputs.pixels=[WF.scaleImg1,0];
+              }
+              if(prompt[WF.scaleImg2]){
+                prompt[WF.scaleImg2].inputs.megapixels=mp;
+                if(prompt[WF.vaeEnc2]) prompt[WF.vaeEnc2].inputs.pixels=[WF.scaleImg2,0];
+              }
+            } else {
+              // OFF: bypass scale nodes — VAE-encode the full-resolution inputs.
+              if(prompt[WF.vaeEnc1]) prompt[WF.vaeEnc1].inputs.pixels=[WF.loadImage1,0];
+              if(prompt[WF.vaeEnc2]) prompt[WF.vaeEnc2].inputs.pixels=[WF.loadImage2,0];
+              delete prompt[WF.scaleImg1];
+              delete prompt[WF.scaleImg2];
+            }
           }
         }
 
@@ -8472,6 +8760,54 @@ ${base}`;
         opacity:"0",transition:"opacity .22s ease, transform .22s ease",
         transform:"translateY(6px)",
       });
+
+      // ── Gallery thumbnail right-click context menu ────────────────────────
+      let _galCtxImg=null;
+      const _galCtxMenu=mk("div",{
+        position:"fixed",zIndex:"999999",background:C.bg1,
+        border:`1px solid ${C.borderH}`,borderRadius:"8px",
+        minWidth:"170px",display:"none",flexDirection:"column",
+        boxShadow:"0 4px 20px rgba(0,0,0,.7)",overflow:"hidden",
+      });
+      const _mkGalCtxItem=(label,icon,onClick)=>{
+        const row=mk("div",{
+          padding:"7px 12px",fontSize:"10px",fontWeight:"500",color:C.text,
+          cursor:"pointer",display:"flex",alignItems:"center",gap:"7px",
+          transition:"background .1s,color .1s",userSelect:"none",
+        });
+        const ico=mk("span",{fontSize:"11px",width:"14px",textAlign:"center",flexShrink:"0",color:C.muted});
+        tx(ico,icon);
+        const lbl=mk("span",{}); tx(lbl,label);
+        row.append(ico,lbl);
+        row.onmouseenter=()=>{row.style.background="rgba(240,255,65,.10)";row.style.color=LIME;ico.style.color=LIME;};
+        row.onmouseleave=()=>{row.style.background="";row.style.color=C.text;ico.style.color=C.muted;};
+        row.onclick=()=>{ _galCtxMenu.style.display="none"; onClick(); };
+        return row;
+      };
+      const _mkGalCtxSec=(label)=>{
+        const h=mk("div",{padding:"6px 12px 3px",fontSize:"8px",fontWeight:"700",
+          letterSpacing:".08em",textTransform:"uppercase",color:C.muted,userSelect:"none"});
+        tx(h,label);return h;
+      };
+      const _mkGalCtxDiv=()=>mk("div",{height:"1px",background:C.border,margin:"2px 0"});
+      _galCtxMenu.append(
+        _mkGalCtxSec("I2I"),
+        _mkGalCtxItem("I2I slot","⟳",()=>{ if(_galCtxImg)_loadIntoI2ISlot(_galCtxImg); }),
+        _mkGalCtxDiv(),
+        _mkGalCtxSec("Edit"),
+        _mkGalCtxItem("Image 1","①",()=>{ if(_galCtxImg)_loadIntoSlot(_galCtxImg,1); }),
+        _mkGalCtxItem("Image 2","②",()=>{ if(_galCtxImg)_loadIntoSlot(_galCtxImg,2); }),
+        _mkGalCtxDiv(),
+        _mkGalCtxSec("Paint"),
+        _mkGalCtxItem("Paint slot","✏",()=>{ if(_galCtxImg)_loadIntoPaintSlot(_galCtxImg); }),
+        _mkGalCtxDiv(),
+        _mkGalCtxSec("Faceswap"),
+        _mkGalCtxItem("Target","◎",()=>{ if(_galCtxImg)_loadIntoFsSlot(_galCtxImg,"target"); }),
+        _mkGalCtxItem("Source","◈",()=>{ if(_galCtxImg)_loadIntoFsSlot(_galCtxImg,"source"); }),
+      );
+      document.body.appendChild(_galCtxMenu);
+      document.addEventListener("click",()=>{ _galCtxMenu.style.display="none"; });
+      document.addEventListener("keydown",(e)=>{ if(e.key==="Escape") _galCtxMenu.style.display="none"; });
 
       // Gallery header
       const galHdr=mk("div",{display:"flex",alignItems:"center",justifyContent:"space-between",
@@ -9077,14 +9413,21 @@ ${base}`;
             S.randomizeSeed=false; S.seed=meta.seed;
             seedInp.setVal(meta.seed); _advSeedInp.setVal(meta.seed); _advSeedRefresh();
           }
-          // LoRAs — grow rows to match metadata, reset, then apply
-          if(Array.isArray(meta.userLoras)&&meta.userLoras.length&&_loraList.length){
-            while(_ulRowEls.length<meta.userLoras.length&&_ulRowEls.length<MAX_LORA_SLOTS)
-              _addULRow();
+          // LoRAs — grow slots if the saved generation used more than we currently show
+          const _metaLoraCount=Array.isArray(meta.userLoras)?meta.userLoras.length:0;
+          const _wantSlots=Math.min(_UL_MAX,Math.max(_UL_DEFAULT,_metaLoraCount));
+          if(S.userLoras.length!==_wantSlots){
+            if(S.userLoras.length<_wantSlots){
+              while(S.userLoras.length<_wantSlots) S.userLoras.push({name:"",strength:1.0});
+            } else {
+              S.userLoras.length=_wantSlots;
+            }
+            _ulRebuildRows();
           }
-          _ulRowEls.forEach((r)=>{
-            r._lora.name=""; r._lora.strength=0;
-            r._dd.set("none"); r._str.value="0";
+          // Always reset all slots first (incl. trigger rows), then apply what meta has
+          _ulRowEls.forEach((r,i)=>{
+            S.userLoras[i]={name:"",strength:0};
+            r._reset();
           });
           if(Array.isArray(meta.userLoras)&&meta.userLoras.length&&_loraList.length){
             const nd=(s)=>(s||"").replace(/\\/g,"/").toLowerCase();
@@ -9095,8 +9438,9 @@ ${base}`;
               const match=loraOpts.find(o=>nd(o)===nd(ul.n||""))||
                 loraOpts.find(o=>nd(o).split("/").pop()===basename);
               if(match&&match!=="none"){
-                _ulRowEls[i]._lora.name=match; _ulRowEls[i]._lora.strength=+(ul.s??1);
-                _ulRowEls[i]._dd.set(match); _ulRowEls[i]._str.value=String(_ulRowEls[i]._lora.strength);
+                S.userLoras[i].name=match; S.userLoras[i].strength=+(ul.s??1);
+                _ulRowEls[i]._dd.set(match); _ulRowEls[i]._str.value=String(S.userLoras[i].strength);
+                _ulRowEls[i]._refreshTrig(match);
               }
             });
           }
@@ -9407,6 +9751,13 @@ ${base}`;
           cell.onmouseleave=()=>{ cell.style.borderColor=C.border;ov.style.opacity="0"; };
 
           cell.onclick=()=>{ _lbNavList=images; lbShow(v,idx); };
+          cell.addEventListener("contextmenu",(e)=>{
+            e.preventDefault();
+            _galCtxImg=v;
+            _galCtxMenu.style.display="flex";
+            _galCtxMenu.style.left=e.clientX+"px";
+            _galCtxMenu.style.top=e.clientY+"px";
+          });
 
           if(v.favorite===true){
             favIco.style.opacity="1";
@@ -9677,6 +10028,46 @@ ${base}`;
         if(settingsOverlay.style.display!=="none"){ e.preventDefault();e.stopPropagation();closeOverlayFade(settingsOverlay);return; }
         if(helpOverlay.style.display!=="none"){ e.preventDefault();e.stopPropagation();closeOverlayFade(helpOverlay);return; }
       });
+
+      // ── Paste image from clipboard (Ctrl+V) ──────────────────────────────────
+      document.addEventListener("paste",async(e)=>{
+        const _sketchOpen=_sketchOv&&_sketchOv.style.display!=="none";
+        if(!_mouseOverRoot&&!_sketchOpen) return;
+        const tag=(document.activeElement||{}).tagName||"";
+        if(tag==="INPUT"||tag==="TEXTAREA") return;
+        const items=[...(e.clipboardData?.items||[])];
+        const imgItem=items.find(i=>i.type.startsWith("image/"));
+        if(!imgItem) return;
+        e.preventDefault();e.stopPropagation();
+        const raw=imgItem.getAsFile();
+        if(!raw) return;
+        // Clipboard files all share the same generic name ("image.png"), so two
+        // pastes would overwrite each other in the input folder (overwrite:true)
+        // and both slots would end up pointing at the same file. Give each paste
+        // a unique name so the slots stay independent.
+        const ext=(raw.type.split("/")[1]||"png").replace("jpeg","jpg");
+        const uniqueName=`pasted_${Date.now()}_${Math.floor(Math.random()*1e4)}.${ext}`;
+        let file;
+        try{ file=new File([raw],uniqueName,{type:raw.type}); }
+        catch(_){ file=raw; file.name=uniqueName; } // fallback for older browsers
+        // If the Sketch canvas is open, paste the image as a new layer instead.
+        if(_sketchOv&&_sketchOv.style.display!=="none"){
+          _sketchAddImageLayer(file);
+          return;
+        }
+        // Pick target slot based on active pill and slot state
+        let targetSlot=null;
+        if(activePill==="edit"){
+          targetSlot=!img1Slot.hasFile()?img1Slot:img2Slot;
+        } else if(activePill==="i2i"){
+          targetSlot=i2iSlot;
+        } else if(activePill==="inpaint"){
+          targetSlot=_paintSlot;
+        } else if(activePill==="faceswap"){
+          targetSlot=!_fsTargetSlot.hasFile()?_fsTargetSlot:_fsSourceSlot;
+        }
+        if(targetSlot) targetSlot.loadFile(file);
+      },{capture:true});
 
       // Fetch models
       const _loadModels=()=>api.fetchApi("/flux_klein/models")

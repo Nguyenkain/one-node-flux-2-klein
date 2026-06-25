@@ -109,6 +109,43 @@ Built with the help of [Claude](https://claude.ai) by Anthropic.
 
 ## Changelog
 
+### June 23, 2026
+
+**More LoRA slots**
+The LoRA panel now starts with 3 slots and you can add up to 6 with the "+ Add slot" button (and remove extras with "Remove last slot"). The panel was also redesigned to be cleaner, with collapsible trigger words and a scrollable list.
+
+**Downscale reference images (new Settings option)**
+Added a toggle in Settings to downscale input images before they enter the model, for EDIT and Sketch modes. Lower MP means faster generation and lower VRAM, which helps avoid out-of-memory freezes on large images. On by default at 1 MP (matching the previous behaviour); turn it off for maximum fidelity when your GPU can handle the full resolution.
+
+**Custom prompts and settings now survive reinstalls**
+Your custom Discover prompts, LoRA trigger words and T2I templates are now stored in the ComfyUI user folder instead of inside the node folder, so they are no longer lost when you update or reinstall the node.
+
+**Paste in Paint mode**
+You can now paste an image from your clipboard while the Sketch canvas is open, and it drops in as a new layer.
+
+**Drag to change LoRA strength**
+Click and drag horizontally on a LoRA strength value to scrub it, just like native ComfyUI nodes. Clicking still lets you type a value, and the whole number is selected on focus.
+
+**Symlinked model folders are now detected**
+The model scanner now follows symbolic links, so LoRAs and other models stored on another drive via symlinks are correctly picked up.
+
+---
+
+### June 22, 2026
+
+**Paste from clipboard**
+You can now paste images directly from your clipboard (Ctrl+V) while hovering over the node. In Edit and Faceswap mode the image goes into the first empty slot, then the second if the first is already taken.
+
+**Sketch improvements**
+- Added fullscreen mode - hit the expand button in the Sketch toolbar to go fullscreen.
+- Brush size limit increased from 200 to 500px.
+- Added aspect ratio lock button next to the canvas size inputs.
+
+**Gallery right-click**
+Right-clicking any thumbnail in the gallery grid now shows a quick "Use as..." context menu.
+
+---
+
 ### June 20, 2026
 
 **Negative LoRA strength**

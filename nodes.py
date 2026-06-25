@@ -13,6 +13,10 @@ NODE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(NODE_DIR, 'config.json')
 SUBFOLDER = "one-node-flux-2-klein"
 
+# User config lives outside the node folder so it survives reinstalls / git pull.
+USER_CONFIG_DIR = os.path.join(folder_paths.get_user_directory(), "default", SUBFOLDER)
+USER_CONFIG_PATH = os.path.join(USER_CONFIG_DIR, "config.json")
+
 
 def _favorites_path():
     return os.path.join(NODE_DIR, "favorites.json")
@@ -101,7 +105,8 @@ def _file_key(filename, subfolder=""):
     return f"{subfolder}/{filename}" if subfolder else filename
 
 
-def _load_config():
+def _load_builtin_config():
+    """Read-only defaults shipped with the node. Never written to."""
     try:
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -109,9 +114,91 @@ def _load_config():
         return {}
 
 
-def _save_config(cfg):
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, ensure_ascii=False, indent=2)
+def _load_user_config():
+    """User edits, stored outside the node folder so they survive reinstalls."""
+    try:
+        with open(USER_CONFIG_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _merge_discover(builtin, user):
+    """Deep-merge discover_prompts so users see BOTH new built-in presets and
+    their own. Built-in items first; user items appended/override by label."""
+    out = json.loads(json.dumps(builtin or {}))  # deep copy
+    for pill, udata in (user or {}).items():
+        if not isinstance(udata, dict) or "categories" not in udata:
+            out[pill] = udata
+            continue
+        bcats = (out.get(pill) or {}).get("categories", [])
+        by_cat = {c.get("cat"): c for c in bcats}
+        for ucat in udata.get("categories", []):
+            name = ucat.get("cat")
+            if name in by_cat:
+                items = by_cat[name].setdefault("items", [])
+                labels = {it.get("label") for it in items}
+                for uit in ucat.get("items", []):
+                    if uit.get("label") in labels:
+                        for i, it in enumerate(items):
+                            if it.get("label") == uit.get("label"):
+                                items[i] = uit
+                                break
+                    else:
+                        items.append(uit)
+            else:
+                bcats.append(ucat)
+        out.setdefault(pill, {})["categories"] = bcats
+    return out
+
+
+def _load_config():
+    builtin = _load_builtin_config()
+    user = _load_user_config()
+    merged = dict(builtin)
+    merged.update(user)  # user wins for simple keys
+    # discover_prompts gets a deep merge so new built-in presets stay visible
+    merged["discover_prompts"] = _merge_discover(
+        builtin.get("discover_prompts"), user.get("discover_prompts")
+    )
+    return merged
+
+
+def _diff_discover(builtin, incoming):
+    """Return only user-added/changed discover items, so the user file does not
+    freeze a copy of the built-ins (which would hide future built-in presets)."""
+    diff = {}
+    for pill, idata in (incoming or {}).items():
+        if not isinstance(idata, dict) or "categories" not in idata:
+            diff[pill] = idata
+            continue
+        bcats = {c.get("cat"): {it.get("label"): it for it in c.get("items", [])}
+                 for c in (builtin.get(pill) or {}).get("categories", [])}
+        out_cats = []
+        for icat in idata.get("categories", []):
+            name = icat.get("cat")
+            bitems = bcats.get(name, {})
+            new_items = [it for it in icat.get("items", [])
+                         if bitems.get(it.get("label")) != it]
+            if name not in bcats or new_items:
+                out_cats.append({"cat": name, "items": new_items})
+        if out_cats:
+            diff[pill] = {"categories": out_cats}
+    return diff
+
+
+def _save_config(patch):
+    """Write user edits to the user folder only. Repo config.json is never touched."""
+    user = _load_user_config()
+    builtin = _load_builtin_config()
+    for k, v in patch.items():
+        if k == "discover_prompts":
+            user[k] = _diff_discover(builtin.get("discover_prompts", {}), v)
+        else:
+            user[k] = v
+    os.makedirs(USER_CONFIG_DIR, exist_ok=True)
+    with open(USER_CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(user, f, ensure_ascii=False, indent=2)
 
 
 def _get_output_dir():
@@ -515,9 +602,7 @@ async def save_config_route(request):
         patch = await request.json()
         if not isinstance(patch, dict):
             return web.json_response({"ok": False, "error": "invalid payload"}, status=400)
-        cfg = _load_config()
-        cfg.update({k: v for k, v in patch.items()})
-        _save_config(cfg)
+        _save_config(patch)
         return web.json_response({"ok": True})
     except Exception as e:
         print(f"[FluxKlein] config save error: {e}")
@@ -721,7 +806,8 @@ def _scan(folder_key, extensions=None):
     for base in bases:
         if not os.path.isdir(base):
             continue
-        for root, _, files in os.walk(base):
+        # followlinks=True so symlinked LoRA folders (e.g. on another drive) are scanned
+        for root, _, files in os.walk(base, followlinks=True):
             for fn in files:
                 if any(fn.lower().endswith(e) for e in exts):
                     found.append(os.path.relpath(os.path.join(root, fn), base))
@@ -733,7 +819,8 @@ def _scan_path(path, extensions=None):
     if not os.path.isdir(path):
         return ["none"]
     found = []
-    for root, _, files in os.walk(path):
+    # followlinks=True so symlinked folders (e.g. on another drive) are scanned
+    for root, _, files in os.walk(path, followlinks=True):
         for fn in files:
             if any(fn.lower().endswith(e) for e in exts):
                 found.append(os.path.relpath(os.path.join(root, fn), path))
