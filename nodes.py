@@ -1,4 +1,4 @@
-﻿import os
+import os
 import json
 import glob
 import time
@@ -275,23 +275,31 @@ def _png_embed_meta(png_path, meta_dict):
         try:
             with open(tmp, "wb") as f:
                 f.write(final)
-            # On Windows, the PNG may still be held by ComfyUI's SaveImage node briefly.
-            # Retry os.replace up to 5 times with short delays before giving up.
             import time
-            for attempt in range(5):
+            for attempt in range(12):
                 try:
                     os.replace(tmp, png_path)
                     break
+                except PermissionError:
+                    if attempt == 11:
+                        return False
+                    time.sleep(0.25 * (attempt + 1))
                 except OSError:
-                    if attempt == 4:
+                    if attempt == 11:
                         raise
-                    time.sleep(0.3)
+                    time.sleep(0.25)
         except Exception:
             try:
                 os.remove(tmp)
             except OSError:
                 pass
             raise
+        finally:
+            if os.path.exists(tmp):
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
         return True
     except Exception as e:
         print(f"[FluxKlein] png_embed_meta error: {e}")
@@ -352,18 +360,7 @@ def _read_json_meta(image_path):
 
 
 def _write_json_meta(image_path, meta_dict):
-    """Write metadata: embed into PNG tEXt chunk (primary) + metadata/ sidecar (fallback)."""
-    ok_png = False
-    if image_path.lower().endswith('.png') and os.path.exists(image_path):
-        orig_mtime = os.path.getmtime(image_path)
-        ok_png = _png_embed_meta(image_path, meta_dict)
-        if ok_png:
-            try:
-                os.utime(image_path, (orig_mtime, orig_mtime))
-            except Exception:
-                pass
-            print(f"[FluxKlein] Meta embedded in PNG: {os.path.basename(image_path)}")
-    # Also write JSON sidecar into metadata/ subdir
+    """Write metadata to metadata/ sidecar; avoid rewriting PNG file shown by UI."""
     mp = _meta_path(image_path)
     tmp = mp + ".tmp"
     try:
@@ -379,7 +376,7 @@ def _write_json_meta(image_path, meta_dict):
                 os.remove(tmp)
             except Exception:
                 pass
-        return ok_png  # return True if at least PNG embed succeeded
+        return False
 
 
 def _serve_json(filename):
@@ -400,6 +397,9 @@ PromptServer.instance.routes.get("/flux_klein/workflow_inpaint")(_serve_json("wo
 PromptServer.instance.routes.get("/flux_klein/workflow_outpaint")(_serve_json("workflows/outpaint_workflow.json"))
 PromptServer.instance.routes.get("/flux_klein/workflow_faceswap")(_serve_json("workflows/faceswap_workflow.json"))
 PromptServer.instance.routes.get("/flux_klein/workflow_remove_bg")(_serve_json("workflows/remove_bg_workflow.json"))
+PromptServer.instance.routes.get("/flux_klein/workflow_llm")(_serve_json("workflows/llm_workflow.json"))
+PromptServer.instance.routes.get("/flux_klein/workflow_seedvr2")(_serve_json("workflows/seedvr2_upscale.json"))
+PromptServer.instance.routes.get("/flux_klein/workflow_ultrasharp")(_serve_json("workflows/ultrasharp_upscale.json"))
 
 
 @PromptServer.instance.routes.get("/flux_klein/bgremoval_models")
@@ -430,6 +430,71 @@ async def get_bgremoval_models(request):
                     found.append(fn)
     found = sorted(set(found))
     return web.json_response({"models": found})
+
+
+@PromptServer.instance.routes.get("/flux_klein/upscale_models")
+async def get_upscale_models(request):
+    exts = [".safetensors", ".ckpt", ".pt", ".pth"]
+    found = []
+    try:
+        for base in folder_paths.get_folder_paths("upscale_models"):
+            if os.path.isdir(base):
+                for root, _, files in os.walk(base):
+                    for fn in files:
+                        if any(fn.lower().endswith(e) for e in exts):
+                            found.append(os.path.relpath(os.path.join(root, fn), base))
+    except Exception:
+        pass
+    if not found:
+        try:
+            models_dir = folder_paths.models_dir
+        except Exception:
+            models_dir = os.path.join(os.path.dirname(os.path.dirname(NODE_DIR)), "models")
+        base = os.path.join(models_dir, "upscale_models")
+        if os.path.isdir(base):
+            for root, _, files in os.walk(base):
+                for fn in files:
+                    if any(fn.lower().endswith(e) for e in exts):
+                        found.append(os.path.relpath(os.path.join(root, fn), base))
+    found = sorted(set(found))
+    return web.json_response({"models": found or ["none"]})
+
+
+@PromptServer.instance.routes.get("/flux_klein/seedvr2_models")
+async def get_seedvr2_models(request):
+    exts = [".safetensors", ".ckpt", ".pt", ".pth"]
+    found = []
+    for key in ("seedvr2", "seedvr"):
+        try:
+            for base in folder_paths.get_folder_paths(key):
+                if os.path.isdir(base):
+                    for root, _, files in os.walk(base):
+                        for fn in files:
+                            if any(fn.lower().endswith(e) for e in exts):
+                                found.append(os.path.relpath(os.path.join(root, fn), base))
+        except Exception:
+            pass
+    try:
+        models_dir = folder_paths.models_dir
+    except Exception:
+        models_dir = os.path.join(os.path.dirname(os.path.dirname(NODE_DIR)), "models")
+    for rel in ("seedvr2", "seedvr"):
+        base = os.path.join(models_dir, rel)
+        if os.path.isdir(base):
+            for root, _, files in os.walk(base):
+                for fn in files:
+                    if any(fn.lower().endswith(e) for e in exts):
+                        found.append(os.path.relpath(os.path.join(root, fn), base))
+    if not found:
+        diff_dir = os.path.join(models_dir, "diffusion_models")
+        if os.path.isdir(diff_dir):
+            for root, _, files in os.walk(diff_dir):
+                for fn in files:
+                    low = fn.lower()
+                    if "seedvr" in low and any(low.endswith(e) for e in exts):
+                        found.append(os.path.relpath(os.path.join(root, fn), diff_dir))
+    found = sorted(set(found))
+    return web.json_response({"models": found or ["none"]})
 
 
 @PromptServer.instance.routes.get("/flux_klein/config")
@@ -832,5 +897,73 @@ class FluxKleinOneNode:
 
 NODE_CLASS_MAPPINGS = {"FluxKleinOneNode": FluxKleinOneNode}
 NODE_DISPLAY_NAME_MAPPINGS = {"FluxKleinOneNode": "One Node · FLUX.2 [klein]"}
+
+
+# ── LLM endpoints ─────────────────────────────────────────────────────────────
+@PromptServer.instance.routes.get("/flux_klein/llm_models")
+async def get_llm_models(request):
+    """Scan models/LLM/*.gguf (exclude mmproj files)."""
+    try:
+        models_dir = folder_paths.models_dir
+    except Exception:
+        models_dir = os.path.join(os.path.dirname(os.path.dirname(NODE_DIR)), "models")
+
+    llm_dir = os.path.join(models_dir, "LLM")
+    found = []
+
+    if os.path.isdir(llm_dir):
+        for root, _, files in os.walk(llm_dir, followlinks=True):
+            for fn in files:
+                if fn.lower().endswith('.gguf'):
+                    # Skip mmproj files
+                    lower = fn.lower()
+                    if 'mmproj' not in lower and 'vision' not in lower:
+                        rel = os.path.relpath(os.path.join(root, fn), llm_dir)
+                        found.append(rel)
+
+    return web.json_response({"models": sorted(found) if found else ["none"]})
+
+
+@PromptServer.instance.routes.get("/flux_klein/llm_mmprojs")
+async def get_llm_mmprojs(request):
+    """Scan models/LLM/*mmproj*.gguf or *vision*.gguf."""
+    try:
+        models_dir = folder_paths.models_dir
+    except Exception:
+        models_dir = os.path.join(os.path.dirname(os.path.dirname(NODE_DIR)), "models")
+
+    llm_dir = os.path.join(models_dir, "LLM")
+    found = ["none"]  # Always include none option
+
+    if os.path.isdir(llm_dir):
+        for root, _, files in os.walk(llm_dir, followlinks=True):
+            for fn in files:
+                if fn.lower().endswith('.gguf'):
+                    lower = fn.lower()
+                    if 'mmproj' in lower or 'vision' in lower:
+                        rel = os.path.relpath(os.path.join(root, fn), llm_dir)
+                        found.append(rel)
+
+    return web.json_response({"mmprojs": sorted(found)})
+
+
+@PromptServer.instance.routes.get("/flux_klein/llm_prompts")
+async def get_llm_prompts(request):
+    """Scan models/LLM/prompts/*.txt."""
+    try:
+        models_dir = folder_paths.models_dir
+    except Exception:
+        models_dir = os.path.join(os.path.dirname(os.path.dirname(NODE_DIR)), "models")
+
+    prompts_dir = os.path.join(models_dir, "LLM", "prompts")
+    found = ["none"]
+
+    if os.path.isdir(prompts_dir):
+        for fn in os.listdir(prompts_dir):
+            if fn.lower().endswith('.txt'):
+                found.append(fn)
+
+    return web.json_response({"prompts": sorted(found)})
+
 
 _migrate_meta_sidecars()

@@ -1,0 +1,2 @@
+# This file keeps the logs/ directory in git while ignoring its contents.
+# Log files are generated at runtime and should never be committed.

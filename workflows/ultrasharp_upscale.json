@@ -1,0 +1,50 @@
+{
+  "FKUS:load": {
+    "inputs": {
+      "image": "placeholder.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": { "title": "Load Image" }
+  },
+  "FKUS:scale_in": {
+    "inputs": {
+      "image": ["FKUS:load", 0],
+      "upscale_method": "bilinear",
+      "scale_by": 1
+    },
+    "class_type": "ImageScaleBy",
+    "_meta": { "title": "Image Scale In" }
+  },
+  "FKUS:model": {
+    "inputs": {
+      "model_name": "4x-UltraSharpV2.pth"
+    },
+    "class_type": "UpscaleModelLoader",
+    "_meta": { "title": "Load 4x UltraSharp" }
+  },
+  "FKUS:upscale": {
+    "inputs": {
+      "upscale_model": ["FKUS:model", 0],
+      "image": ["FKUS:scale_in", 0]
+    },
+    "class_type": "ImageUpscaleWithModel",
+    "_meta": { "title": "4x UltraSharp Upscale" }
+  },
+  "FKUS:scale_out": {
+    "inputs": {
+      "image": ["FKUS:upscale", 0],
+      "upscale_method": "bilinear",
+      "scale_by": 0.5
+    },
+    "class_type": "ImageScaleBy",
+    "_meta": { "title": "Image Scale Out" }
+  },
+  "FKUS:save": {
+    "inputs": {
+      "filename_prefix": "one-node-flux-2-klein/F2K_upscaled",
+      "images": ["FKUS:scale_out", 0]
+    },
+    "class_type": "SaveImage",
+    "_meta": { "title": "Save 4x UltraSharp Image" }
+  }
+}

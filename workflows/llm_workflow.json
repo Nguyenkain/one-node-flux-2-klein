@@ -1,0 +1,38 @@
+{
+  "FK:LLM_LOAD": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "placeholder.png"
+    }
+  },
+  "FK:LLM_VISION": {
+    "class_type": "LLMTextProcessor",
+    "inputs": {
+      "image": ["FK:LLM_LOAD", 0],
+      "model": "model.gguf",
+      "mmproj": "none",
+      "system_prompt": "none",
+      "prompt": "Describe this image in detail.",
+      "max_tokens": 2048,
+      "temperature": 0.7,
+      "top_p": 0.8,
+      "top_k": 20,
+      "repeat_penalty": 1.0,
+      "ctx_size": 8192,
+      "memory_mode": "auto",
+      "n_gpu_layers": 99,
+      "n_cpu_moe_layers": 1,
+      "seed": -1,
+      "timeout_seconds": 300,
+      "reasoning": "off",
+      "enable_processing": true,
+      "extra_args": ""
+    }
+  },
+  "FK:LLM_SHOW": {
+    "class_type": "easy showAnything",
+    "inputs": {
+      "anything": ["FK:LLM_VISION", 0]
+    }
+  }
+}

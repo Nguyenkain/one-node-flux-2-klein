@@ -40,7 +40,7 @@ const WF = {
 };
 
 const LS_KEY = "one_node_flux_klein_state";
-const DEFAULT_NEG_PROMPT = "low quality, deformed, blurry, watermark, ugly, bad anatomy, disfigured, mutated, extra limbs, poorly drawn face, bad proportions, gross proportions, jpeg artifacts, overexposed, underexposed";
+const DEFAULT_NEG_PROMPT = "low quality, worst quality, blurry, out of focus, watermark, text, logo, jpeg artifacts, overexposed, underexposed, deformed, disfigured, mutated anatomy, bad anatomy, bad proportions, gross proportions, unnatural pose, twisted body, broken limbs, extra limbs, missing limbs, extra arms, extra hands, extra fingers, fused fingers, malformed hands, poorly drawn hands, extra legs, missing legs, malformed feet, poorly drawn face, distorted face, asymmetrical eyes, cross-eye, duplicate person, cloned body parts";
 const DEFAULT_FACESWAP_PROMPT = "Replace the head in image 1 with the head from image 2, adapting the facial features to match the artistic style, focus, and environmental lighting of the image 1.";
 
 // ── Resolution presets (Flux-friendly, divisible by 16) ──────────────────────
@@ -427,12 +427,45 @@ let _activeS=null, _activeShowFinal=null, _activeResetBtn=null, _activeShowError
     const {node,value,max}=evt.detail||{};
     if(!_activeS?.generating||!node) return;
     const pct=max>0?Math.round(value/max*100):0;
-    if(_activeSetStage) _activeSetStage("Generating…",`Step ${value}/${max}`,pct);
+    if(_activeSetStage) _activeSetStage((_activeS._seedvr2Active||_activeS._ultrasharpActive)?"Upscaling…":"Generating…",`Step ${value}/${max}`,pct);
+  });
+
+  api.addEventListener("executed",evt=>{
+    if(!_activeS?.generating||_activeS._llmActive) return;
+    const detail=evt.detail||{};
+    const pid=detail.prompt_id||detail.promptId;
+    if(pid&&_activePromptIdRef&&pid!==_activePromptIdRef()) return;
+    const out=detail.output||{};
+    const imgs=out.images||out.gifs||[];
+    const v=imgs.find(x=>x&&x.filename&&x.type==="output"&&(x.subfolder||"").startsWith("one-node-flux-2-klein"));
+    if(!v) return;
+    const cb=Date.now();
+    const url=api.apiURL(`/view?filename=${encodeURIComponent(v.filename)}&type=${encodeURIComponent(v.type||"output")}&subfolder=${encodeURIComponent(v.subfolder||"")}&t=${cb}`);
+    _activeShowFinal?.(url,v.filename,v.subfolder||"");
   });
 
   api.addEventListener("execution_success",async()=>{
     if(!_activeS?.generating) return;
+    if(_activeS._llmActive) return; // LLM tab handles its own result, skip image display
     try{
+      const pid=_activePromptIdRef?.();
+      if(pid){
+        try{
+          const hR=await api.fetchApi(`/history/${pid}`);
+          const hD=await hR.json();
+          const entry=hD[pid];
+          for(const nd of Object.values(entry?.outputs||{})){
+            const imgs=nd.images||nd.gifs||[];
+            const v=imgs.find(x=>x&&x.filename&&x.type==="output"&&(x.subfolder||"").startsWith("one-node-flux-2-klein"));
+            if(v){
+              const cb=Date.now();
+              const url=api.apiURL(`/view?filename=${encodeURIComponent(v.filename)}&type=${encodeURIComponent(v.type||"output")}&subfolder=${encodeURIComponent(v.subfolder||"")}&t=${cb}`);
+              _activeShowFinal?.(url,v.filename,v.subfolder||"");
+              return;
+            }
+          }
+        }catch(e){console.warn("[FluxKlein] history fast output:",e);}
+      }
       const r=await api.fetchApi(`/flux_klein/gallery?offset=0&limit=20&subfolder=one-node-flux-2-klein`);
       const d=await r.json();
       const prev=_activeS?._preRunFiles||new Set();
@@ -459,7 +492,7 @@ let _activeS=null, _activeShowFinal=null, _activeResetBtn=null, _activeShowError
   });
 
   api.addEventListener("b_preview",evt=>{
-    if(!_activeS?.generating) return;
+    if(!_activeS?.generating||_activeS._llmActive) return;
     const blob=evt.detail;
     if(!blob) return;
     const url=URL.createObjectURL(blob);
@@ -557,6 +590,15 @@ app.registerExtension({
           fsLora:       saved.fsLora||"",       // faceswap: LoRA filename
           fsResizeLonger: saved.fsResizeLonger||0, // 0 = disabled, >0 = resize longer side to this px
           bgRemovalModel: saved.bgRemovalModel||"",  // birefnet model for remove bg
+          seedvr2Model: saved.seedvr2Model||"seedvr2_ema_7b_sharp_fp16.safetensors",
+          upscaleModel: saved.upscaleModel||"4x-UltraSharpV2.pth",
+          // LLM
+          llmModel:             saved.llmModel||"",
+          llmMmproj:            saved.llmMmproj||"none",
+          llmSystemPromptFile:  saved.llmSystemPromptFile||"none",
+          llmImage:             saved.llmImage||null,
+          promptLLM:            saved.promptLLM!==undefined?saved.promptLLM:(saved.pill==="llm"?saved.prompt||"":""),
+          llmResult:            saved.llmResult||"",
           // Prompt — shared (active pill's value) + per-pill storage
           prompt:       saved.prompt||"",
           promptT2i:    saved.promptT2i!==undefined?saved.promptT2i:((!saved.pill||saved.pill==="t2i")?saved.prompt||"":""),
@@ -564,7 +606,7 @@ app.registerExtension({
           promptPaint:  saved.promptPaint!==undefined?saved.promptPaint:(saved.pill==="inpaint"?saved.prompt||"":""),
           promptFs:     saved.promptFs!==undefined?saved.promptFs:(saved.pill==="faceswap"?saved.prompt||"":""),
           // LoRAs
-          userLoras:    saved.userLoras||[{name:"",strength:1.0},{name:"",strength:1.0},{name:"",strength:1.0}],
+          userLoras:    saved.userLoras&&saved.userLoras.length?saved.userLoras:[{name:"",strength:1.0}],
           // Generation state
           generating:   false,
           _pendingMeta: null,
@@ -577,7 +619,7 @@ app.registerExtension({
       const S=self._fk_S;
       // Sync S.prompt to the active pill's slot on init (covers first load before _pillPromptKey is available)
       {
-        const _initKey=S.pill==="edit"?"promptEdit":S.pill==="inpaint"?"promptPaint":S.pill==="faceswap"?"promptFs":S.pill==="i2i"?"promptI2i":"promptT2i";
+        const _initKey=S.pill==="edit"?"promptEdit":S.pill==="inpaint"?"promptPaint":S.pill==="faceswap"?"promptFs":S.pill==="i2i"?"promptI2i":S.pill==="llm"?"promptLLM":"promptT2i";
         S.prompt=S[_initKey]||S.prompt||"";
         S[_initKey]=S.prompt;
       }
@@ -595,9 +637,10 @@ app.registerExtension({
           randomizeSeed:S.randomizeSeed, seed:S.seed,
           advancedUI:S.advancedUI, steps:S.steps, cfg:S.cfg, sampler:S.sampler, scheduler:S.scheduler, denoise:S.denoise,
           image1Name:S.image1Name, image2Name:S.image2Name,
-          fsTarget:S.fsTarget, fsSource:S.fsSource, fsLora:S.fsLora, fsResizeLonger:S.fsResizeLonger, bgRemovalModel:S.bgRemovalModel,
+          fsTarget:S.fsTarget, fsSource:S.fsSource, fsLora:S.fsLora, fsResizeLonger:S.fsResizeLonger, bgRemovalModel:S.bgRemovalModel, seedvr2Model:S.seedvr2Model, upscaleModel:S.upscaleModel,
           prompt:S.prompt, promptT2i:S.promptT2i, promptEdit:S.promptEdit,
-          promptPaint:S.promptPaint, promptFs:S.promptFs, promptI2i:S.promptI2i,
+          promptPaint:S.promptPaint, promptFs:S.promptFs, promptI2i:S.promptI2i, promptLLM:S.promptLLM,
+          llmModel:S.llmModel, llmMmproj:S.llmMmproj, llmSystemPromptFile:S.llmSystemPromptFile, llmImage:S.llmImage, llmResult:S.llmResult,
           i2iImage:S.i2iImage, i2iDenoise:S.i2iDenoise, i2iResizeLonger:S.i2iResizeLonger,
           userLoras:S.userLoras, soundEnabled, extLoaders:S.extLoaders,
         });
@@ -804,7 +847,7 @@ app.registerExtension({
       tx(settRefresh,"↻  Refresh models");
       settRefresh.onmouseenter=()=>settRefresh.style.opacity=".7";
       settRefresh.onmouseleave=()=>settRefresh.style.opacity="1";
-      settRefresh.onclick=()=>{ tx(settRefresh,"↻  Refreshing…"); _loadModels().then(()=>tx(settRefresh,"↻  Refresh models")); };
+      settRefresh.onclick=()=>{ tx(settRefresh,"↻  Refreshing…"); Promise.all([_loadModels(),_loadLLMModels(),_loadSeedVR2Models(),_loadUpscaleModels()]).then(()=>tx(settRefresh,"↻  Refresh models")); };
       const settBtnRow=mk("div",{display:"flex",alignItems:"center",gap:"0"});
       settBtnRow.append(settRefresh,settClose);
       settHdr.append(settTitle,settBtnRow);
@@ -915,13 +958,70 @@ app.registerExtension({
       const modGrid2=mk("div",{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"8px",marginBottom:"16px"});
       const fsLoraF=mkModDD("Faceswap LoRA","/models/loras",S.fsLora,v=>{S.fsLora=v;persist();});
       const bgF=mkModDD("Remove BG Model","models/background_removal","none",v=>{S.bgRemovalModel=v==="none"?"":v;persist();});
+      const seedvrF=mkModDD("SeedVR2 Model","models/seedvr2",S.seedvr2Model||"none",v=>{S.seedvr2Model=v==="none"?"":v;persist();},"seedvr2");
       api.fetchApi("/flux_klein/bgremoval_models").then(r=>r.json()).then(d=>{
         const models=d.models||[];
         bgF.dd.updateItems(["none",...models]);
         if(S.bgRemovalModel&&models.includes(S.bgRemovalModel)) bgF.dd.set(S.bgRemovalModel);
         else bgF.dd.set("none");
       }).catch(()=>{});
-      modGrid2.append(fsLoraF.wrap,bgF.wrap,mk("div"));
+      const _loadSeedVR2Models=async()=>{
+        try{
+          const r=await api.fetchApi("/flux_klein/seedvr2_models");
+          const d=await r.json();
+          const models=d.models||["none"];
+          seedvrF.dd.updateItems(models);
+          if(S.seedvr2Model&&models.includes(S.seedvr2Model)) seedvrF.dd.set(S.seedvr2Model);
+          else if(models.length&&models[0]!=="none"){ seedvrF.dd.set(models[0]); S.seedvr2Model=models[0]; persist(); }
+          else seedvrF.dd.set("none");
+        }catch(e){console.warn("[FluxKlein] SeedVR2 model scan:",e);}
+      };
+      const modGrid3=mk("div",{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"8px",marginBottom:"16px"});
+      const upscaleF=mkModDD("4x Upscale Model","models/upscale_models",S.upscaleModel||"none",v=>{S.upscaleModel=v==="none"?"":v;persist();},"ultrasharp");
+      const _loadUpscaleModels=async()=>{
+        try{
+          const r=await api.fetchApi("/flux_klein/upscale_models");
+          const d=await r.json();
+          const models=d.models||["none"];
+          upscaleF.dd.updateItems(models);
+          if(S.upscaleModel&&models.includes(S.upscaleModel)) upscaleF.dd.set(S.upscaleModel);
+          else if(models.length&&models[0]!=="none"){ upscaleF.dd.set(models[0]); S.upscaleModel=models[0]; persist(); }
+          else upscaleF.dd.set("none");
+        }catch(e){console.warn("[FluxKlein] upscale model scan:",e);}
+      };
+      _loadSeedVR2Models();
+      _loadUpscaleModels();
+      modGrid2.append(fsLoraF.wrap,bgF.wrap,seedvrF.wrap);
+      modGrid3.append(upscaleF.wrap,mk("div"),mk("div"));
+
+      // ── LLM settings ──────────────────────────────────────────────────────
+      const llmTitle=mk("div",{fontSize:"10px",fontWeight:"700",letterSpacing:".1em",
+        textTransform:"uppercase",color:C.muted,marginTop:"4px",marginBottom:"6px"});
+      tx(llmTitle,"LLM (Vision)");
+
+      const modGridLLM=mk("div",{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"8px",marginBottom:"4px"});
+      const llmModelF  =mkModDD("Model",       "/models/LLM",  S.llmModel,             v=>{S.llmModel=v;persist();},"");
+      const llmMmprojF =mkModDD("MMProj",      "/models/LLM",  S.llmMmproj||"none",   v=>{S.llmMmproj=v;persist();},"mmproj");
+      const llmSysPF   =mkModDD("System Prompt","/models/LLM/prompts", S.llmSystemPromptFile||"none", v=>{S.llmSystemPromptFile=v;persist();},"");
+      modGridLLM.append(llmModelF.wrap,llmMmprojF.wrap,llmSysPF.wrap);
+
+      // ── LLM scan helpers ──────────────────────────────────────────────────
+      const _loadLLMModels=async()=>{
+        try{
+          const [mR, mmR, pR]=await Promise.all([
+            api.fetchApi("/flux_klein/llm_models"),
+            api.fetchApi("/flux_klein/llm_mmprojs"),
+            api.fetchApi("/flux_klein/llm_prompts"),
+          ]);
+          const [mD, mmD, pD]=await Promise.all([mR.json(), mmR.json(), pR.json()]);
+          const models=mD.models||["none"];
+          const mmprojs=mmD.mmprojs||["none"];
+          const prompts=pD.prompts||["none"];
+          llmModelF.dd.updateItems(models);
+          llmMmprojF.dd.updateItems(mmprojs);
+          llmSysPF.dd.updateItems(prompts);
+        }catch(e){console.warn("[FluxKlein] LLM model scan:",e);}
+      };
 
       // ── Preferences ───────────────────────────────────────────────────────
       const prefTitle=mk("div",{fontSize:"10px",fontWeight:"700",letterSpacing:".1em",
@@ -968,7 +1068,7 @@ app.registerExtension({
         _refreshExtInputUI();
       });
 
-      settingsOverlay.append(settHdr,modGrid,_kvNote,_baseNote,modGrid2,prefTitle,soundToggle.el,advUIToggle.el,extLoadersToggle.el);
+      settingsOverlay.append(settHdr,modGrid,_kvNote,_baseNote,modGrid2,modGrid3,llmTitle,modGridLLM,prefTitle,soundToggle.el,advUIToggle.el,extLoadersToggle.el);
 
       // ── Overlay helpers ───────────────────────────────────────────────────
       const openOverlay=(el)=>{
@@ -1294,11 +1394,12 @@ app.registerExtension({
       const pillEdit    =Pill("EDIT",    activePill==="edit",     ()=>setPill("edit"));
       const pillInpaint =Pill("PAINT",   activePill==="inpaint",  ()=>setPill("inpaint"));
       const pillFaceswap=Pill("FACESWAP",activePill==="faceswap", ()=>setPill("faceswap"));
-      topBarLeft.append(pillT2I,pillI2I,pillEdit,pillInpaint,pillFaceswap);
+      const pillLLM     =Pill("LLM",     activePill==="llm",      ()=>setPill("llm"));
+      topBarLeft.append(pillT2I,pillI2I,pillEdit,pillInpaint,pillFaceswap,pillLLM);
 
       let _promptTARef=null; // set after promptTA is created
 
-      const _pillPromptKey=(p)=>p==="t2i"?"promptT2i":p==="edit"?"promptEdit":p==="inpaint"?"promptPaint":p==="i2i"?"promptI2i":"promptFs";
+      const _pillPromptKey=(p)=>p==="t2i"?"promptT2i":p==="edit"?"promptEdit":p==="inpaint"?"promptPaint":p==="i2i"?"promptI2i":p==="llm"?"promptLLM":"promptFs";
 
       function setPill(p){
         // Save current prompt to old pill's slot before switching
@@ -1315,13 +1416,14 @@ app.registerExtension({
         S.prompt=S[_pillPromptKey(p)];
         if(_promptTARef){ _promptTARef.value=S.prompt; if(typeof _promptOvTA!=="undefined"&&_promptOvTA) _promptOvTA.value=S.prompt; }
         persist();
-        [pillT2I,pillI2I,pillEdit,pillInpaint,pillFaceswap].forEach(b=>{
+        [pillT2I,pillI2I,pillEdit,pillInpaint,pillFaceswap,pillLLM].forEach(b=>{
           const isActive=
             (b===pillT2I&&p==="t2i")||
             (b===pillI2I&&p==="i2i")||
             (b===pillEdit&&p==="edit")||
             (b===pillInpaint&&p==="inpaint")||
-            (b===pillFaceswap&&p==="faceswap");
+            (b===pillFaceswap&&p==="faceswap")||
+            (b===pillLLM&&p==="llm");
           b.style.background=isActive?LIME:C.bg2;
           b.style.color=isActive?"#111":C.text;
           b.style.borderColor=isActive?LIME:C.border;
@@ -1371,6 +1473,7 @@ app.registerExtension({
         };
         const _nfClose=()=>{
           if(ov._cleanupCmp){ov._cleanupCmp();ov._cleanupCmp=null;}
+          if(ov._cleanupImg){ov._cleanupImg();ov._cleanupImg=null;}
           if(ov._fsUseBtn){ov._fsUseBtn.remove();ov._fsUseBtn=null;}
           ov.style.display="none";
           const img=_nfMediaWrap.querySelector("img");
@@ -1387,6 +1490,7 @@ app.registerExtension({
         ov.append(_nfTopBar,_nfMediaWrap);
         ov._open=(type,src,name,opts)=>{
           _nfMediaWrap.innerHTML="";_nfPillRow.innerHTML="";
+          _nfMediaWrap.style.padding="48px 16px 16px";
           tx(_nfName,name||"");
           // Hide preview action buttons while fullscreen overlay is open (image-only mode)
           if(type==="image"){
@@ -1394,27 +1498,57 @@ app.registerExtension({
             if(typeof previewDelBtn!=="undefined"&&previewDelBtn) previewDelBtn.style.visibility="hidden";
           }
           if(type==="image"){
-            const outer=mk("div",{display:"flex",flexDirection:"column",alignItems:"center",
-              justifyContent:"center",gap:"8px",width:"100%",height:"100%"});
-            const img=mk("img",{maxWidth:"100%",maxHeight:"calc(100% - 56px)",objectFit:"contain",
-              borderRadius:"8px",boxShadow:"0 4px 24px rgba(0,0,0,.5)",display:"block"});
+            const outer=mk("div",{position:"relative",width:"100%",height:"100%",overflow:"hidden",cursor:"grab",background:"rgba(0,0,0,.18)"});
+            const img=mk("img",{position:"absolute",left:"50%",top:"50%",maxWidth:"none",maxHeight:"none",
+              objectFit:"contain",borderRadius:"8px",boxShadow:"0 4px 24px rgba(0,0,0,.5)",display:"block",
+              transformOrigin:"center center",userSelect:"none",webkitUserDrag:"none"});
+            let z=1,fitScale=1,panX=0,panY=0,drag=false,lastX=0,lastY=0;
+            const _apply=()=>{img.style.transform=`translate(calc(-50% + ${panX}px), calc(-50% + ${panY}px)) scale(${z})`;};
+            const _fit=()=>{
+              const w=outer.clientWidth||1,h=outer.clientHeight||1;
+              const iw=img.naturalWidth||1,ih=img.naturalHeight||1;
+              fitScale=Math.min((w-32)/iw,(h-82)/ih,1);
+              img.style.width=iw+"px";img.style.height=ih+"px";
+              z=fitScale;panX=0;panY=0;_apply();
+            };
             img.src=src;
             img.onload=()=>{
               _nfPillRow.innerHTML="";
-              _nfPillRow.appendChild(_nfPill(`${img.naturalWidth}×${img.naturalHeight} px`));
+              _nfPillRow.append(_nfPill(`${img.naturalWidth}×${img.naturalHeight} px`),_nfPill("Wheel: zoom · Drag: pan · Double click: fit"));
+              _fit();
             };
-            outer.append(img,_nfPillRow);
+            outer.addEventListener("wheel",e=>{
+              e.preventDefault();
+              const old=z;
+              const factor=e.deltaY<0?1.12:0.89;
+              z=Math.max(fitScale*.5,Math.min(8,z*factor));
+              const r=outer.getBoundingClientRect();
+              const dx=e.clientX-(r.left+r.width/2)-panX;
+              const dy=e.clientY-(r.top+r.height/2)-panY;
+              if(old>0){panX-=dx*(z/old-1);panY-=dy*(z/old-1);}
+              _apply();
+            },{passive:false});
+            outer.addEventListener("mousedown",e=>{drag=true;lastX=e.clientX;lastY=e.clientY;outer.style.cursor="grabbing";e.preventDefault();});
+            const _mm=e=>{if(!drag)return;panX+=e.clientX-lastX;panY+=e.clientY-lastY;lastX=e.clientX;lastY=e.clientY;_apply();};
+            const _mu=()=>{drag=false;outer.style.cursor="grab";};
+            document.addEventListener("mousemove",_mm);
+            document.addEventListener("mouseup",_mu);
+            outer.ondblclick=()=>_fit();
+            ov._cleanupImg=()=>{document.removeEventListener("mousemove",_mm);document.removeEventListener("mouseup",_mu);};
+            const pillWrap=mk("div",{position:"absolute",left:"0",right:"0",bottom:"14px",display:"flex",justifyContent:"center",pointerEvents:"none"});
+            pillWrap.appendChild(_nfPillRow);
+            outer.append(img,pillWrap);
             _nfMediaWrap.appendChild(outer);
           } else if(type==="comparer"){
             // Full-screen before/after comparer with "Use as input" in top-right
             const {genSrc,baseSrc,onUse}=opts||{};
             const cWrap=mk("div",{position:"relative",width:"100%",height:"100%",
               overflow:"hidden",borderRadius:"8px",cursor:"col-resize",userSelect:"none",
-              minHeight:"0",flex:"1"});
-            const cBase=mk("img",{position:"absolute",inset:"0",width:"100%",height:"100%",objectFit:"contain"});
+              minHeight:"0",flex:"1",background:"rgba(0,0,0,.18)"});
+            const cBase=mk("img",{position:"absolute",left:"50%",top:"50%",maxWidth:"none",maxHeight:"none",objectFit:"contain",transformOrigin:"center center",userSelect:"none",webkitUserDrag:"none"});
             cBase.src=baseSrc||"";
-            const cGen=mk("div",{position:"absolute",top:"0",left:"0",bottom:"0",overflow:"hidden",width:"100%"});
-            const cGenImg=mk("img",{position:"absolute",top:"0",left:"0",height:"100%",objectFit:"contain"});
+            const cGen=mk("div",{position:"absolute",inset:"0",overflow:"hidden",clipPath:"inset(0 0 0 0)"});
+            const cGenImg=mk("img",{position:"absolute",left:"50%",top:"50%",maxWidth:"none",maxHeight:"none",objectFit:"contain",transformOrigin:"center center",userSelect:"none",webkitUserDrag:"none"});
             cGen.appendChild(cGenImg);
             cGenImg.src=genSrc||"";
             const cLine=mk("div",{position:"absolute",top:"0",bottom:"0",width:"2px",
@@ -1425,27 +1559,68 @@ app.registerExtension({
               boxShadow:"0 2px 10px rgba(0,0,0,.7)",pointerEvents:"none"});
             cHandle.innerHTML=`<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="#111" stroke-width="2.5" stroke-linecap="round"><path d="M8 4l-4 8 4 8M16 4l4 8-4 8"/></svg>`;
             cLine.appendChild(cHandle);
-            const _fsSetPct=(pct)=>{
-              pct=Math.max(0,Math.min(100,pct));
-              cGen.style.width=pct+"%";
-              cLine.style.left=`calc(${pct}% - 1px)`;
-              cGenImg.style.width=(cWrap.offsetWidth||900)+"px";
+            let z=1,fitScale=1,panX=0,panY=0,pct=100;
+            const _cmpApply=()=>{
+              const t=`translate(calc(-50% + ${panX}px), calc(-50% + ${panY}px)) scale(${z})`;
+              cBase.style.transform=t;cGenImg.style.transform=t;
             };
-            let _fsDrag=false;
-            cWrap.addEventListener("mousedown",e=>{_fsDrag=true;e.preventDefault();});
-            const _fsMM=(e)=>{if(!_fsDrag)return;const r=cWrap.getBoundingClientRect();_fsSetPct((e.clientX-r.left)/r.width*100);};
-            const _fsMU=()=>{_fsDrag=false;};
+            const _fsSetPct=(nextPct)=>{
+              pct=Math.max(0,Math.min(100,nextPct));
+              cGen.style.clipPath=`inset(0 ${100-pct}% 0 0)`;
+              cLine.style.left=`calc(${pct}% - 1px)`;
+              _cmpApply();
+            };
+            const _cmpFit=()=>{
+              const w=cWrap.clientWidth||1,h=cWrap.clientHeight||1;
+              const iw=Math.max(cGenImg.naturalWidth||0,cBase.naturalWidth||0,1);
+              const ih=Math.max(cGenImg.naturalHeight||0,cBase.naturalHeight||0,1);
+              fitScale=Math.min((w-32)/iw,(h-32)/ih,1);
+              cBase.style.width=iw+"px";cBase.style.height=ih+"px";
+              cGenImg.style.width=iw+"px";cGenImg.style.height=ih+"px";
+              z=fitScale;panX=0;panY=0;_fsSetPct(pct);
+            };
+            let _fsDrag=false,_panDrag=false,lastX=0,lastY=0;
+            cLine.addEventListener("mousedown",e=>{_fsDrag=true;e.preventDefault();e.stopPropagation();});
+            cWrap.addEventListener("mousedown",e=>{
+              const r=cWrap.getBoundingClientRect();
+              const lineX=r.left+r.width*pct/100;
+              if(Math.abs(e.clientX-lineX)<18){_fsDrag=true;cWrap.style.cursor="col-resize";}
+              else{_panDrag=true;lastX=e.clientX;lastY=e.clientY;cWrap.style.cursor="grabbing";}
+              e.preventDefault();
+            });
+            const _fsMM=(e)=>{
+              if(_fsDrag){const r=cWrap.getBoundingClientRect();_fsSetPct((e.clientX-r.left)/r.width*100);return;}
+              if(_panDrag){panX+=e.clientX-lastX;panY+=e.clientY-lastY;lastX=e.clientX;lastY=e.clientY;_cmpApply();}
+            };
+            const _fsMU=()=>{_fsDrag=false;_panDrag=false;cWrap.style.cursor="col-resize";};
+            cWrap.addEventListener("wheel",e=>{
+              e.preventDefault();
+              const old=z,factor=e.deltaY<0?1.12:0.89;
+              z=Math.max(fitScale*.5,Math.min(8,z*factor));
+              const r=cWrap.getBoundingClientRect();
+              const dx=e.clientX-(r.left+r.width/2)-panX;
+              const dy=e.clientY-(r.top+r.height/2)-panY;
+              if(old>0){panX-=dx*(z/old-1);panY-=dy*(z/old-1);}
+              _cmpApply();
+            },{passive:false});
+            cWrap.ondblclick=()=>_cmpFit();
             document.addEventListener("mousemove",_fsMM);
             document.addEventListener("mouseup",_fsMU);
-            cWrap.addEventListener("touchstart",()=>{_fsDrag=true;},{passive:true});
+            cWrap.addEventListener("touchstart",e=>{_fsDrag=true;},{passive:true});
             cWrap.addEventListener("touchmove",e=>{if(!_fsDrag)return;const r=cWrap.getBoundingClientRect();_fsSetPct((e.touches[0].clientX-r.left)/r.width*100);},{passive:true});
             cWrap.addEventListener("touchend",()=>{_fsDrag=false;});
             ov._cleanupCmp=()=>{document.removeEventListener("mousemove",_fsMM);document.removeEventListener("mouseup",_fsMU);};
-            cWrap.append(cBase,cGen,cLine);
+            const cmpPills=mk("div",{position:"absolute",left:"0",right:"0",bottom:"14px",zIndex:"5",display:"flex",justifyContent:"center",pointerEvents:"none"});
+            _nfPillRow.appendChild(_nfPill("Wheel: zoom · Drag image: pan · Drag divider: compare · Double click: fit"));
+            cmpPills.appendChild(_nfPillRow);
+            cWrap.append(cBase,cGen,cLine,cmpPills);
             _nfMediaWrap.style.position="relative";
             _nfMediaWrap.style.padding="0"; // comparer fills full area
             _nfMediaWrap.appendChild(cWrap);
-            cGenImg.onload=()=>{ _fsSetPct(100); };
+            let _cmpLoaded=0;
+            const _cmpReady=()=>{_cmpLoaded++;if(_cmpLoaded>=2){_cmpFit();_fsSetPct(100);}};
+            cBase.onload=_cmpReady;
+            cGenImg.onload=_cmpReady;
             // "Use as input" button — top-right corner of the overlay
             if(onUse){
               const useBtn=mk("button",{
@@ -5620,6 +5795,29 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         }
       };
 
+      function _resetPostActionBtn(btn,label){
+        btn.disabled=false;tx(btn,label);
+        btn.style.opacity="";btn.style.cursor="pointer";btn.style.transform="";
+        btn.style.borderColor=C.border;btn.style.color=C.text;btn.style.background=C.bg3;
+      }
+
+      const _mkPostActionBtn=(label)=>{
+        const btn=mk("button",{
+          background:"rgba(20,20,20,.78)",border:`1px solid ${C.border}`,borderRadius:"7px",
+          color:C.text,fontSize:"9px",fontWeight:"800",cursor:"pointer",
+          height:"26px",padding:"0 9px",flex:"0 0 auto",
+          backdropFilter:"blur(4px)",boxShadow:"0 2px 8px rgba(0,0,0,.35)",
+          transition:"border-color .15s,color .15s,opacity .15s,background .15s,transform .1s",outline:"none",
+          overflow:"hidden",whiteSpace:"nowrap",letterSpacing:".02em",
+        });
+        tx(btn,label);
+        btn.onmouseenter=()=>{if(!S.generating){btn.style.borderColor=LIME;btn.style.color=LIME;btn.style.transform="translateY(-1px)";}};
+        btn.onmouseleave=()=>{if(!S.generating){btn.style.borderColor=C.border;btn.style.color=C.text;btn.style.transform="";}};
+        return btn;
+      };
+      const seedvrBtn=_mkPostActionBtn("SeedVR2");
+      const ultraSharpBtn=_mkPostActionBtn("4x Upscaler");
+
       const stopBtn=mk("button",{
         background:"transparent",border:`1px solid ${C.border}`,borderRadius:"8px",
         color:C.muted,fontSize:"12px",cursor:"pointer",
@@ -5818,6 +6016,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       if(S.fsSource) _fsSourceSlot._restorePreview(S.fsSource);
 
       leftPanel.append(i2iPanel,editPanel,inpaintPanel,faceswapPanel,resSect,advPanel,seedRow,_seedLockedWarn,genRow);
+      // llmPanel appended below after its definition
 
       // ── RIGHT PANEL — Preview area fills available height ──
       const rightPanel=mk("div",{flex:"1",minWidth:"0",display:"flex",flexDirection:"column",overflow:"hidden"});
@@ -5871,7 +6070,65 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         progFill.style.width=p+"%";tx(progPct,Math.round(p)+"%");
       };
 
-      // ── Image Comparer — always active after EDIT generation ─────────────
+      // ── LLM PANEL ────────────────────────────────────────────────────────
+      const llmPanel=mk("div",{display:"flex",flexDirection:"column",gap:"6px"});
+
+      // Image slot — reuse standard ImgSlot pattern
+      const llmSlotRow=mk("div",{display:"flex",gap:"10px",alignItems:"center"});
+      const llmSlotLbl=mk("div",{fontSize:"8px",fontWeight:"700",color:C.muted,
+        textTransform:"uppercase",letterSpacing:".07em",textAlign:"center"});
+      tx(llmSlotLbl,"LLM Image");
+      const llmSlot=ImgSlot(false,
+        name=>{S.llmImage=name;persist();},
+        null  // no dims callback for LLM
+      );
+      llmSlotRow.append(llmSlot.el,llmSlotLbl);
+
+      // LLM Mode dropdown
+      const LLM_MODES=[
+        {label:"Edit (keep all) — chỉ sửa đúng guide, giữ nguyên mọi thứ khác", file:"LLM-system.txt", key:"edit-keep"},
+        {label:"Describe only — miêu tả thuần túy nội dung ảnh",                file:"LLM-describe.txt", key:"describe"},
+        {label:"Edit freely — sửa tự do, chỉ giữ mặt & đặc trưng nhân vật",      file:"LLM-edit-freely.txt", key:"edit-free"},
+      ];
+      if(!S.llmMode) S.llmMode="edit-keep";
+      const llmModeWrap=mk("div",{display:"flex",flexDirection:"column",gap:"3px"});
+      const llmModeCap=cap("LLM Mode");
+      const llmModeDD=DD(LLM_MODES.map(m=>m.label),
+        (LLM_MODES.find(m=>m.key===S.llmMode)||LLM_MODES[0]).label,
+        label=>{
+          const mode=LLM_MODES.find(m=>m.label===label);
+          if(mode){
+            S.llmMode=mode.key;S.llmSystemPromptFile=mode.file;persist();
+            if(typeof llmSysPF!=="undefined"&&llmSysPF.dd) llmSysPF.dd.set(mode.file);
+          }
+        }
+      );
+      llmModeDD.el.style.fontSize="10px";
+      llmModeWrap.append(llmModeCap,llmModeDD.el);
+      // Sync initial state
+      const _initMode=LLM_MODES.find(m=>m.key===S.llmMode)||LLM_MODES[0];
+      S.llmSystemPromptFile=_initMode.file;
+
+      // Optional prompt guide (what to ask the LLM about the image)
+      const llmPromptWrap=mk("div",{display:"flex",flexDirection:"column",gap:"4px"});
+      const llmPromptLabel=mk("div",{fontSize:"9px",fontWeight:"700",letterSpacing:".1em",textTransform:"uppercase",color:C.muted});tx(llmPromptLabel,"Guide prompt (optional — what to ask LLM)");
+      const llmPromptTA=mk("textarea",{
+        height:"56px",minHeight:"56px",resize:"vertical",
+        background:C.bg1,color:C.text,border:`1px solid ${C.border}`,
+        borderRadius:"6px",padding:"8px",fontSize:"11px",fontFamily:"inherit",
+        outline:"none",width:"100%",boxSizing:"border-box",
+      },{placeholder:"Describe this image in detail…"});
+      llmPromptTA.value=S.promptLLM||"";
+      llmPromptTA.oninput=()=>{S.promptLLM=llmPromptTA.value;persist();};
+      llmPromptWrap.append(llmPromptLabel,llmPromptTA);
+
+      llmPanel.append(llmSlotRow,llmModeWrap,llmPromptWrap);
+
+      // Insert llmPanel into leftPanel
+      leftPanel.insertBefore(llmPanel, resSect);
+
+      // Restore LLM image if present
+      if(S.llmImage) llmSlot._restorePreview(S.llmImage);
       // Generated image fills the box; Image 1 revealed from the right by dragging divider left.
       // Divider starts at 100% (full generated shown), user drags left to reveal Image 1.
       const comparerWrap=mk("div",{
@@ -5985,6 +6242,9 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         _mkPUSection("Faceswap"),
         _mkPUItem("Target","◎",()=>_puUpload(n=>{setPill("faceswap");S.fsTarget=n;_fsTargetSlot._restorePreview(n);persist();})),
         _mkPUItem("Source","◈",()=>_puUpload(n=>{setPill("faceswap");S.fsSource=n;_fsSourceSlot._restorePreview(n);persist();})),
+        _mkPUDivider(),
+        _mkPUSection("LLM"),
+        _mkPUItem("LLM Image","🧠",()=>_puUpload(n=>{setPill("llm");S.llmImage=n;llmSlot._restorePreview(n);persist();})),
       );
 
       let _puDropOpen=false;
@@ -6082,16 +6342,72 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
           comparerWrap.style.display="none";
           previewUseWrap.style.display="none";
           previewDelBtn.style.display="none";
+          previewZoomBtn.style.display="none";
+          previewDimsLbl.style.display="none";
+          postActionRow.style.display="none";
           placeholder.style.display="flex";
           _lastGenObj=null;
           _galNeedsRefresh=true;
         });
       };
 
+      const previewZoomBtn=mk("button",{
+        position:"absolute",top:"10px",right:"92px",zIndex:"6",
+        width:"28px",height:"28px",borderRadius:"8px",
+        background:"rgba(20,20,20,.78)",border:"1px solid rgba(255,255,255,.18)",
+        color:"rgba(255,255,255,.86)",cursor:"pointer",outline:"none",
+        display:"none",alignItems:"center",justifyContent:"center",padding:"0",
+        backdropFilter:"blur(4px)",transition:"background .15s,border-color .15s,color .15s",
+      });
+      previewZoomBtn.title="Fullscreen preview";
+      previewZoomBtn.innerHTML=`<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="6"/><path d="m16 16 5 5"/><path d="M11 8v6M8 11h6"/></svg>`;
+      previewZoomBtn.onmouseenter=()=>{previewZoomBtn.style.borderColor=LIME;previewZoomBtn.style.color=LIME;previewZoomBtn.style.background="rgba(35,35,35,.9)";};
+      previewZoomBtn.onmouseleave=()=>{previewZoomBtn.style.borderColor="rgba(255,255,255,.18)";previewZoomBtn.style.color="rgba(255,255,255,.86)";previewZoomBtn.style.background="rgba(20,20,20,.78)";};
+      previewZoomBtn.onclick=e=>{
+        e.preventDefault();e.stopPropagation();
+        let src="", name="", fsType="image", fsOpts=null;
+        if(comparerWrap.style.display!=="none"&&comparerGenImg.src){
+          src=comparerGenImg.src;name="Before / After";fsType="comparer";
+          fsOpts={genSrc:comparerGenImg.src,baseSrc:comparerBase.src};
+        } else if(finalImg.style.display!=="none"&&finalImg.src){
+          src=finalImg.src;name=finalImg.src.split("/").pop().split("?")[0]||"Image";
+        }
+        if(src) _initNodeFsOverlay()._open(fsType,src,name,fsOpts);
+      };
+
       // Comparer activates automatically in EDIT mode after generation
 
-      previewBox.append(placeholder,finalImg,comparerWrap,previewUseWrap,previewDelBtn,progWrap);
-      rightPanel.appendChild(previewBox);
+      const previewDimsLbl=mk("div",{
+        display:"none",fontSize:"10px",color:C.muted,textAlign:"center",
+        marginTop:"5px",lineHeight:"1.2",letterSpacing:".03em",flexShrink:"0",
+      });
+      let _previewCompareBaseDims=null;
+      const _setPreviewDimsFromImg=(img)=>{
+        if(img&&img.naturalWidth&&img.naturalHeight){
+          if(_previewCompareBaseDims){
+            tx(previewDimsLbl,`${_previewCompareBaseDims.w}×${_previewCompareBaseDims.h} px → ${img.naturalWidth}×${img.naturalHeight} px`);
+          } else {
+            tx(previewDimsLbl,`${img.naturalWidth}×${img.naturalHeight} px`);
+          }
+          previewDimsLbl.style.display="block";
+        }
+      };
+      finalImg.onload=()=>{_previewCompareBaseDims=null;_setPreviewDimsFromImg(finalImg);};
+      comparerBase.onload=()=>{
+        if(comparerBase.naturalWidth&&comparerBase.naturalHeight){
+          _previewCompareBaseDims={w:comparerBase.naturalWidth,h:comparerBase.naturalHeight};
+          _setPreviewDimsFromImg(comparerGenImg);
+        }
+      };
+      comparerGenImg.onload=()=>{_setPreviewDimsFromImg(comparerGenImg);_cmpSetPct(100);};
+      const postActionRow=mk("div",{
+        position:"absolute",left:"10px",top:"10px",zIndex:"6",
+        display:"none",gap:"6px",alignItems:"center",
+        boxSizing:"border-box",pointerEvents:"auto",
+      });
+      postActionRow.append(seedvrBtn,ultraSharpBtn);
+      previewBox.append(placeholder,finalImg,comparerWrap,previewUseWrap,previewDelBtn,previewZoomBtn,progWrap,postActionRow);
+      rightPanel.append(previewBox,previewDimsLbl);
 
       mainRow.append(leftPanel,rightPanel);
 
@@ -6134,13 +6450,16 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       _ulRefreshBtn.onclick=()=>{ tx(_ulRefreshBtn,"↻"); _loadModels(); };
       _ulPHdr.append(_ulPTitle,_ulRefreshBtn,_ulPClose);
       const _ulPSub=mk("div",{width:"100%",height:"1px",background:"rgba(240,255,65,.10)",marginTop:"-6px"});
-      const _ulRows=mk("div",{display:"flex",flexDirection:"column",gap:"10px"});
+      const _ulRows=mk("div",{display:"flex",flexDirection:"column",gap:"10px",
+        maxHeight:"380px",overflowY:"auto",paddingRight:"4px"});
 
-      const _mkULRow=(idx)=>{
+      const _mkULRow=(loraObj)=>{
         const row=mk("div",{display:"flex",flexDirection:"column",gap:"4px"});
+        row._lora=loraObj;
         const rowLbl=mk("div",{fontSize:"7px",color:"rgba(240,255,65,.5)",fontWeight:"700",
           letterSpacing:".1em",textTransform:"uppercase"});
-        tx(rowLbl,`SLOT ${idx+1}`);
+        tx(rowLbl,"SLOT ?"); // real label set by _ulReindex()
+        row._lbl=rowLbl;
         const rowCtrl=mk("div",{display:"flex",alignItems:"center",gap:"6px"});
 
         // Trigger words area — shown below the control row
@@ -6211,9 +6530,9 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
 
         const ulDD=DD(["none"],"none",v=>{
           const has=v&&v!=="none";
-          S.userLoras[idx].name=has?v:"";
-          if(!has){ S.userLoras[idx].strength=0; ulStr.value="0"; }
-          else if(S.userLoras[idx].strength===0){ S.userLoras[idx].strength=1; ulStr.value="1"; }
+          row._lora.name=has?v:"";
+          if(!has){ row._lora.strength=0; ulStr.value="0"; }
+          else if(row._lora.strength===0){ row._lora.strength=1; ulStr.value="1"; }
           _ulUpdateBtn();persist();
           _refreshTrigWords(v);
         });
@@ -6224,11 +6543,11 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
           border:`1px solid rgba(255,255,255,.1)`,borderRadius:"6px",
           color:LIME,fontSize:"10px",fontWeight:"700",
           padding:"5px 0",outline:"none",transition:"border-color .15s",flexShrink:"0",
-        },{type:"number",step:"0.05",value:String(S.userLoras[idx].name&&S.userLoras[idx].name!=="none"?S.userLoras[idx].strength||1:0)});
+        },{type:"number",step:"0.05",value:String(row._lora.name&&row._lora.name!=="none"?row._lora.strength||1:0)});
         ulStr.onfocus=()=>ulStr.style.borderColor=LIME;
-        ulStr.onblur=()=>{ S.userLoras[idx].strength=isNaN(+ulStr.value)?1:+ulStr.value;
-          ulStr.value=String(S.userLoras[idx].strength);persist(); };
-        ulStr.oninput=()=>{ S.userLoras[idx].strength=+ulStr.value||0;persist(); };
+        ulStr.onblur=()=>{ row._lora.strength=isNaN(+ulStr.value)?1:+ulStr.value;
+          ulStr.value=String(row._lora.strength);persist(); };
+        ulStr.oninput=()=>{ row._lora.strength=+ulStr.value||0;persist(); };
 
         const ulClr=mk("button",{
           background:"rgba(255,80,80,.08)",border:"1px solid rgba(255,80,80,.25)",borderRadius:"6px",
@@ -6239,22 +6558,38 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         ulClr.onmouseenter=()=>{ ulClr.style.background="rgba(255,80,80,.18)";ulClr.style.color="#ff6666"; };
         ulClr.onmouseleave=()=>{ ulClr.style.background="rgba(255,80,80,.08)";ulClr.style.color="rgba(255,100,100,.7)"; };
         ulClr.onclick=()=>{
-          S.userLoras[idx]={name:"",strength:0};ulDD.set("none");ulStr.value="0";
+          row._lora.name="";row._lora.strength=0;ulDD.set("none");ulStr.value="0";
           _ulUpdateBtn();persist();
           trigRow.style.display="none";
         };
 
-        rowCtrl.append(ulDD.el,ulStr,ulClr);
+        // REMOVE button — removes the entire row from the panel
+        const ulRem=mk("button",{
+          background:"rgba(255,80,80,.06)",border:"1px solid rgba(255,80,80,.18)",
+          borderRadius:"6px",cursor:"pointer",color:"rgba(255,100,100,.5)",
+          fontSize:"9px",fontWeight:"700",padding:"5px 8px",outline:"none",
+          transition:"all .15s",flexShrink:"0",
+        });
+        tx(ulRem,"×");ulRem.title="Remove this LoRA slot";
+        ulRem.onmouseenter=()=>{ulRem.style.background="rgba(255,80,80,.14)";ulRem.style.color="#ff6666";};
+        ulRem.onmouseleave=()=>{ulRem.style.background="rgba(255,80,80,.06)";ulRem.style.color="rgba(255,100,100,.5)";};
+        ulRem.onclick=()=>_removeULRow(row);
+        row._remBtn=ulRem;
+
+        rowCtrl.append(ulDD.el,ulStr,ulClr,ulRem);
         row.append(rowLbl,rowCtrl,trigRow);
-        row._dd=ulDD;row._str=ulStr;
+        row._dd=ulDD;row._str=ulStr;row._lora=loraObj;row._lbl=rowLbl;
 
         // Restore trigger words display if lora already selected
-        if(S.userLoras[idx].name&&S.userLoras[idx].name!=="none"){
-          _refreshTrigWords(S.userLoras[idx].name);
+        if(row._lora.name&&row._lora.name!=="none"){
+          _refreshTrigWords(row._lora.name);
         }
         return row;
       };
-      const _ulRowEls=[_mkULRow(0),_mkULRow(1),_mkULRow(2)];
+      const _ulRowEls=S.userLoras.map(loraObj=>{
+        const row=_mkULRow(loraObj);
+        return row;
+      });
       _ulRowEls.forEach(r=>_ulRows.appendChild(r));
 
       // Info note at bottom of panel
@@ -6265,7 +6600,20 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       });
       tx(_ulInfoNote,"✦ Trigger words are applied automatically if saved and set for the selected LoRA.");
 
-      _ulPanel.append(_ulPHdr,_ulPSub,_ulRows,_ulInfoNote);
+      // "Add Slot" button inside panel — hidden when at MAX_LORA_SLOTS
+      const _ulAddRowBtnRow=mk("div",{display:"flex",justifyContent:"center",paddingTop:"4px"});
+      const _ulAddRowBtn=mk("button",{
+        background:"rgba(240,255,65,.06)",border:"1px dashed rgba(240,255,65,.25)",
+        borderRadius:"8px",cursor:"pointer",color:C.muted,fontSize:"10px",
+        fontWeight:"700",padding:"6px 16px",outline:"none",transition:"all .15s",width:"100%",
+      });
+      tx(_ulAddRowBtn,"+ Add Slot");
+      _ulAddRowBtn.onmouseenter=()=>{_ulAddRowBtn.style.background="rgba(240,255,65,.12)";_ulAddRowBtn.style.color=LIME;_ulAddRowBtn.style.borderColor=LIME;};
+      _ulAddRowBtn.onmouseleave=()=>{_ulAddRowBtn.style.background="rgba(240,255,65,.06)";_ulAddRowBtn.style.color=C.muted;_ulAddRowBtn.style.borderColor="rgba(240,255,65,.25)";};
+      _ulAddRowBtn.onclick=()=>_addULRow();
+      _ulAddRowBtnRow.appendChild(_ulAddRowBtn);
+
+      _ulPanel.append(_ulPHdr,_ulPSub,_ulRows,_ulAddRowBtnRow,_ulInfoNote);
       _ulOverlay.append(_ulBg,_ulPanel);
       root.appendChild(_ulOverlay);
 
@@ -6321,6 +6669,47 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         _ulBtn.style.color=n>0?LIME:LIME;
       };
       _ulUpdateBtn();
+
+      // ── Dynamic LoRA slot helpers ───────────────────────────────────────────
+      const MAX_LORA_SLOTS=20;
+
+      const _ulReindex=()=>{
+        _ulRowEls.forEach((r,i)=>{
+          r._idx=i;
+          if(r._lbl) tx(r._lbl,`SLOT ${i+1}`);
+          if(r._remBtn) r._remBtn.style.display=_ulRowEls.length<=1?"none":"";
+        });
+        _ulAddRowBtnRow.style.display=_ulRowEls.length>=MAX_LORA_SLOTS?"none":"flex";
+      };
+
+      const _addULRow=()=>{
+        if(_ulRowEls.length>=MAX_LORA_SLOTS) return;
+        const lora={name:"",strength:1.0};
+        S.userLoras.push(lora);
+        const row=_mkULRow(lora);
+        if(_loraList.length) row._dd.updateItems(["none",..._loraList]);
+        row._idx=_ulRowEls.length;
+        _ulRowEls.push(row);
+        _ulRows.appendChild(row);
+        _ulReindex();
+        _ulUpdateBtn();
+        persist();
+      };
+
+      const _removeULRow=(row)=>{
+        if(_ulRowEls.length<=1) return;
+        const idx=_ulRowEls.indexOf(row);
+        if(idx===-1) return;
+        row.remove();
+        _ulRowEls.splice(idx,1);
+        S.userLoras.splice(idx,1);
+        _ulReindex();
+        _ulUpdateBtn();
+        persist();
+      };
+
+      // Run initial reindex so REM buttons reflect row count
+      _ulReindex();
 
       // ── Expand prompt button — identical style to LTX node ────────────────
       const _promptExpandBtn=mk("button",{
@@ -7157,6 +7546,19 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       _inspireBody.style.position="relative"; _inspireBody.style.zIndex="1";
       _inspireOverlay.append(_inspireHdr,_inspireBody);
 
+      // ── Prompt Enhance button ─────────────────────────────────────────────
+      const _promptEnhanceBtn=mk("button",{
+        background:"linear-gradient(135deg,rgba(240,255,65,.10),rgba(240,255,65,.04))",
+        border:"1px solid rgba(240,255,65,.28)",cursor:"pointer",
+        padding:"2px 7px",color:LIME,outline:"none",
+        display:"flex",alignItems:"center",gap:"4px",borderRadius:"5px",
+        fontSize:"9px",fontWeight:"700",letterSpacing:".04em",
+        transition:"all .15s",flexShrink:"0",
+      });
+      tx(_promptEnhanceBtn,"Enhance");
+      _promptEnhanceBtn.onmouseenter=()=>{if(!_promptEnhanceBtn.disabled){_promptEnhanceBtn.style.borderColor=LIME;_promptEnhanceBtn.style.background="linear-gradient(135deg,rgba(240,255,65,.18),rgba(240,255,65,.08))";}};
+      _promptEnhanceBtn.onmouseleave=()=>{if(!_promptEnhanceBtn.disabled){_promptEnhanceBtn.style.borderColor="rgba(240,255,65,.28)";_promptEnhanceBtn.style.background="linear-gradient(135deg,rgba(240,255,65,.10),rgba(240,255,65,.04))";}};
+
       // ── Get Inspired button ───────────────────────────────────────────────
       const _inspireBtn=mk("button",{
         background:"none",border:`1px solid ${C.border}`,cursor:"pointer",
@@ -7169,9 +7571,26 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       _inspireBtn.onmouseleave=()=>{_inspireBtn.style.color=C.muted;_inspireBtn.style.borderColor=C.border;};
       _inspireBtn.onclick=_openInspire;
 
-      // Order: cap | Get Inspired | errChip | [spacer via marginLeft:auto on _ulBtn] | Add LoRA | Expand prompt
+      // ── LLM copy button (shown only in LLM tab) ──────────────────────────
+      const llmCopyToClip=mk("button",{
+        background:"transparent",border:`1px solid ${C.border}`,cursor:"pointer",
+        borderRadius:"4px",padding:"1px 6px",fontSize:"9px",fontWeight:"700",
+        color:C.muted,outline:"none",letterSpacing:".04em",
+        display:"none",transition:"border-color .15s,color .15s",
+      });
+      tx(llmCopyToClip,"📋 Copy");
+      llmCopyToClip.onmouseenter=()=>{llmCopyToClip.style.borderColor=LIME;llmCopyToClip.style.color=LIME;};
+      llmCopyToClip.onmouseleave=()=>{llmCopyToClip.style.borderColor=C.border;llmCopyToClip.style.color=C.muted;};
+      llmCopyToClip.onclick=e=>{e.stopPropagation();
+        navigator.clipboard.writeText(promptTA.value||"").then(()=>{
+          tx(llmCopyToClip,"✓ Copied");
+          setTimeout(()=>tx(llmCopyToClip,"📋 Copy"),1500);
+        }).catch(()=>{});
+      };
+
+      // Order: cap | [copy btn] | Get Inspired | errChip | [spacer via marginLeft:auto on _ulBtn] | Add LoRA | Expand prompt
       promptCap.style.marginBottom="0";
-      promptHdr.append(promptCap,_inspireBtn,errMinChip,_ulBtn,_promptExpandBtn);
+      promptHdr.append(promptCap,llmCopyToClip,_promptEnhanceBtn,_inspireBtn,errMinChip,_ulBtn,_promptExpandBtn);
       promptWrap.appendChild(promptHdr);
 
       const promptTA=mk("textarea",{
@@ -7188,6 +7607,79 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       promptTA.oninput=()=>{S.prompt=promptTA.value;S[_pillPromptKey(activePill)]=promptTA.value;persist();};
       promptTA.addEventListener("keydown",e=>{if(e.key==="Escape"){e.preventDefault();promptTA.blur();}});
       promptTA.addEventListener("wheel",e=>e.stopPropagation(),{passive:true});
+
+      const _setPromptEnhanceRunning=(running)=>{
+        _promptEnhanceBtn.disabled=running;
+        tx(_promptEnhanceBtn,running?"Enhancing…":"Enhance");
+        _promptEnhanceBtn.style.cursor=running?"wait":"pointer";
+        _promptEnhanceBtn.style.opacity=running?".85":"";
+        _promptEnhanceBtn.style.borderColor=running?LIME:"rgba(240,255,65,.28)";
+        _promptEnhanceBtn.style.background=running?"linear-gradient(90deg,rgba(240,255,65,.22),rgba(255,255,255,.10),rgba(240,255,65,.22))":"linear-gradient(135deg,rgba(240,255,65,.10),rgba(240,255,65,.04))";
+        _promptEnhanceBtn.style.backgroundSize=running?"220% 100%":"";
+        _promptEnhanceBtn.style.animation=running?"fk-gradient 1.4s ease infinite":"none";
+      };
+      const _extractLLMText=(entry)=>{
+        for(const nd of Object.values(entry?.outputs||{})){
+          if(nd.text&&Array.isArray(nd.text)&&typeof nd.text[0]==="string") return nd.text[0];
+          for(const v of Object.values(nd)) if(Array.isArray(v)&&typeof v[0]==="string") return v[0];
+        }
+        return "";
+      };
+      const _cleanEnhancedPrompt=(txt)=>{
+        txt=String(txt||"").trim();
+        if((txt.startsWith('"')&&txt.endsWith('"'))||(txt.startsWith("'")&&txt.endsWith("'"))) txt=txt.slice(1,-1).trim();
+        return txt;
+      };
+      _promptEnhanceBtn.onclick=async()=>{
+        const base=(promptTA.value||"").trim();
+        if(!base){showError("Prompt Enhance: please enter a prompt first.");return;}
+        if(!S.llmModel||S.llmModel==="none"){showError("Prompt Enhance: select an LLM model in Settings.");return;}
+        _setPromptEnhanceRunning(true);
+        const enhancePrompt=`You are an expert prompt engineer for FLUX.2 Klein 9B.
+
+Expand the user's prompt into a detailed, production-ready image generation prompt for FLUX.2 Klein 9B.
+Preserve the user's intent and language if possible. The user prompt may be in any language.
+Do not add explanations, markdown, quotes, headings, lists, or commentary.
+Return only the final enhanced prompt.
+
+User prompt:
+${base}`;
+        const llmPrompt={
+          "FK:PE_LLM":{class_type:"LLMTextProcessor",inputs:{
+            model:S.llmModel,mmproj:"none",system_prompt:"none",
+            prompt:enhancePrompt,max_tokens:2048,temperature:0.7,top_p:0.8,top_k:20,
+            repeat_penalty:1.0,ctx_size:8192,memory_mode:"auto",n_gpu_layers:99,
+            n_cpu_moe_layers:1,seed:-1,timeout_seconds:300,reasoning:"off",enable_processing:true,extra_args:""
+          }},
+          "FK:PE_SHOW":{class_type:"easy showAnything",inputs:{anything:["FK:PE_LLM",0]}},
+        };
+        try{
+          const resp=await api.fetchApi("/prompt",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({prompt:llmPrompt,client_id:api.clientId})});
+          const result=await resp.json();
+          if(result.error){showError("Prompt Enhance: "+fmtErr(result.error));return;}
+          const pid=result.prompt_id;
+          let txt="";
+          for(let tries=0;tries<300&&!txt;tries++){
+            await new Promise(r=>setTimeout(r,1000));
+            try{
+              const hR=await api.fetchApi(`/history/${pid}`);
+              const hD=await hR.json();
+              const entry=hD[pid];
+              if(!entry) continue;
+              if(entry.status&&entry.status.status_str==="error"){
+                showError("Prompt Enhance: "+((entry.status.messages||[]).map(m=>m[1]||"").join("; ")||"LLM failed"));
+                return;
+              }
+              txt=_cleanEnhancedPrompt(_extractLLMText(entry));
+            }catch(e){console.warn("[FluxKlein] prompt enhance poll:",e);}
+          }
+          if(!txt){showError("Prompt Enhance: timeout.");return;}
+          S.prompt=txt;S[_pillPromptKey(activePill)]=txt;persist();
+          promptTA.value=txt;
+          if(typeof _promptOvTA!=="undefined"&&_promptOvTA) _promptOvTA.value=txt;
+        }catch(e){showError("Prompt Enhance: "+fmtErr(e));}
+        finally{_setPromptEnhanceRunning(false);}
+      };
 
       // ── Error panel ───────────────────────────────────────────────────────
       const errPanel=mk("div",{display:"none",borderRadius:"8px",overflow:"hidden"});
@@ -7287,6 +7779,10 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         genBtn.style.background=LIME;genBtn.style.backgroundSize="";
         genBtn.style.animation="none";genBtn.style.color="#111";
         genBtn.style.border="2px solid transparent";
+        if(typeof _resetPostActionBtn==="function"){
+          _resetPostActionBtn(seedvrBtn,"SeedVR2");
+          _resetPostActionBtn(ultraSharpBtn,"4x Upscaler");
+        }
         stopBtn.style.maxWidth="0";stopBtn.style.minWidth="0";stopBtn.style.width="0";stopBtn.style.opacity="0";stopBtn.style.padding="0";stopBtn.style.marginLeft="0";
         progWrap.style.display="none";
         if(_lastGenObj) previewDelBtn.style.display="flex";
@@ -7294,7 +7790,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
 
       const resetBtn=()=>{
         S.generating=false;S._pendingMeta=null;_activePromptId=null;
-        S._preRunFiles=new Set();persist();_resetGenBtn();
+        S._llmActive=false;S._seedvr2Active=false;S._ultrasharpActive=false;S._preRunFiles=new Set();persist();_resetGenBtn();
       };
 
       let _lastGenObj=null; // {filename, subfolder} of the most recently generated image
@@ -7304,13 +7800,14 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         if(_previewBlobUrl) URL.revokeObjectURL(_previewBlobUrl);
         _previewBlobUrl=url;
         placeholder.style.display="none";
+        _previewCompareBaseDims=null;
         finalImg.src=url;
         finalImg.style.display="block";
       };
 
       const showFinal=(url,filename,subfolder)=>{
         if(_previewBlobUrl){ URL.revokeObjectURL(_previewBlobUrl); _previewBlobUrl=null; }
-        clearError();S.generating=false;S.previewUrl=null;_activePromptId=null;persist();
+        clearError();S.generating=false;S.previewUrl=null;S._seedvr2Active=false;S._ultrasharpActive=false;_activePromptId=null;persist();
         _resetGenBtn();
         if(soundEnabled)playDone();
         _galNeedsRefresh=true;
@@ -7326,11 +7823,12 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
           }).catch(e=>console.warn("[FluxKlein] save_meta:",e));
         }
 
-        const _showComparer=(img1InputName)=>{
+        const _showComparer=(img1InputName,baseType="input",baseSubfolder="")=>{
+          _previewCompareBaseDims=null;
           finalImg.style.display="none";
           comparerGenImg.src=url;
           comparerGenImg.style.width=(previewBox.offsetWidth||620)+"px";
-          comparerBase.src=api.apiURL(`/view?filename=${encodeURIComponent(img1InputName)}&type=input&subfolder=`);
+          comparerBase.src=api.apiURL(`/view?filename=${encodeURIComponent(img1InputName)}&type=${baseType}&subfolder=${encodeURIComponent(baseSubfolder||"")}`);
           comparerWrap.style.display="block";
           previewUseWrap.style.display="block";
           _cmpSetPct(100);
@@ -7340,7 +7838,13 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         const _snapImg1=S._pendingMeta?.image1||null;
         const _isSketchResult=_snapMode==="sketch"&&_snapImg1;
         const _isPaintResult=(_snapMode==="inpaint"||_snapMode==="outpaint")&&_snapImg1;
-        if(_snapMode==="edit"&&_snapImg1){
+        const _seedvr2Source=S._pendingMeta?.seedvr2Source||null;
+        const _ultrasharpSource=S._pendingMeta?.ultrasharpSource||null;
+        if(_snapMode==="seedvr2"&&_seedvr2Source?.filename){
+          _showComparer(_seedvr2Source.filename,"output",_seedvr2Source.subfolder||"");
+        } else if(_snapMode==="ultrasharp"&&_ultrasharpSource?.filename){
+          _showComparer(_ultrasharpSource.filename,"output",_ultrasharpSource.subfolder||"");
+        } else if(_snapMode==="edit"&&_snapImg1){
           _showComparer(_snapImg1);
         } else if(_isSketchResult||_isPaintResult){
           _showComparer(_snapImg1);
@@ -7350,16 +7854,23 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
           _showComparer(_snapImg1);
         } else {
           comparerWrap.style.display="none";
+          _previewCompareBaseDims=null;
           finalImg.src=url;finalImg.style.display="block";
         }
         previewUseWrap.style.display="block";
+        previewZoomBtn.style.display="flex";
+        postActionRow.style.display=activePill==="llm"?"none":"flex";
         if(filename) previewDelBtn.style.display="flex";
       };
 
       const _slotErr=(slot,lbl)=>{ slot.el.style.borderColor="#e05555"; tx(lbl,"Required!"); lbl.style.color="#e05555"; };
 
       genBtn.onclick=async()=>{
-        if(!S.prompt.trim()&&activePill!=="faceswap"){showError("Please enter a prompt.");return;}
+        if(!S.prompt.trim()&&activePill!=="faceswap"&&activePill!=="llm"){showError("Please enter a prompt.");return;}
+        if(activePill==="llm"){
+          if(!llmSlot.hasFile()){_slotErr(llmSlot, llmSlotLbl);return;}
+          if(!S.llmModel||S.llmModel==="none"){showError("LLM: select a model in Settings.");return;}
+        }
         if(activePill==="inpaint"){
           if(_paintMode==="sketch"){
             if(!_paintSlot.hasFile()){ _slotErr(_paintSlot,_paintSlotLbl); return; }
@@ -7378,7 +7889,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
           if(!S.fsLora||S.fsLora==="none") {showError("FACESWAP: select a Faceswap LoRA in Settings.");return;}
         }
         const _hasExtModel=(()=>{ const n=app.graph.getNodeById(self.id); const inputs=n?.inputs||[]; const slot=inputs.find(i=>i.name==="model"); return slot?.link!=null; })();
-        if(!S.model&&!_hasExtModel){showError("No model selected. Open Settings and choose a model.");return;}
+        if(!S.model&&!_hasExtModel&&activePill!=="llm"){showError("No model selected. Open Settings and choose a model.");return;}
 
         clearError();S.generating=true;
 
@@ -7425,6 +7936,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         genBtn.style.animation="fk-gradient 2.4s ease infinite";
         genBtn.style.color=LIME;genBtn.style.border="2px solid transparent";
         previewDelBtn.style.display="none";
+        previewDimsLbl.style.display="none";
         requestAnimationFrame(()=>{
           stopBtn.style.maxWidth="120px";stopBtn.style.minWidth="";stopBtn.style.width="";stopBtn.style.opacity="1";stopBtn.style.padding="0 14px";stopBtn.style.marginLeft="6px";
         });
@@ -7447,6 +7959,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         else if(isInpaintMode) wfUrl="/flux_klein/workflow_inpaint";
         else if(isOutpaintMode) wfUrl="/flux_klein/workflow_outpaint";
         else if(isFaceswapMode) wfUrl="/flux_klein/workflow_faceswap";
+        else if(activePill==="llm") wfUrl="/flux_klein/workflow_llm";
         else if(isI2IMode) wfUrl="/flux_klein/workflow_i2i";
         else wfUrl="/flux_klein/workflow_t2i";
 
@@ -7461,6 +7974,59 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
 
         const prompt=JSON.parse(JSON.stringify(wfData));
         const set=(id,key,val)=>{ if(prompt[id]) prompt[id].inputs[key]=val; };
+
+        // ── LLM fork: analyze image → inject result into promptTA ────────
+        if(activePill==="llm"){
+          S._llmActive=true;
+          set("FK:LLM_LOAD","image", S.llmImage||"placeholder.png");
+          const llmUserPrompt=llmPromptTA.value.trim()||S.prompt.trim()||"Describe this image in detail.";
+          set("FK:LLM_VISION","prompt",      llmUserPrompt);
+          set("FK:LLM_VISION","model",       S.llmModel||"model.gguf");
+          set("FK:LLM_VISION","mmproj",      S.llmMmproj||"none");
+          set("FK:LLM_VISION","system_prompt", S.llmSystemPromptFile||"none");
+          try{
+            const resp=await api.fetchApi("/prompt",{method:"POST",headers:{"Content-Type":"application/json"},
+              body:JSON.stringify({prompt,client_id:api.clientId})});
+            const result=await resp.json();
+            if(result.error){showError(fmtErr(result.error));resetBtn();return;}
+            const pid=result.prompt_id;
+            setStage("Analyzing image…",pid,0);
+            let done=false,tries=0;
+            while(!done&&tries<300){
+              await new Promise(r=>setTimeout(r,2000));tries++;
+              try{
+                const hR=await api.fetchApi(`/history/${pid}`);
+                const hD=await hR.json();
+                const entry=hD[pid];
+                if(entry){
+                  if(entry.status&&entry.status.status_str==="error"){
+                    showError("LLM: "+((entry.status.messages||[]).map(m=>m[1]||"").join("; ")));
+                    resetBtn();return;
+                  }
+                  for(const [nid,nd] of Object.entries(entry.outputs||{})){
+                    let txt=null;
+                    if(nd.text&&Array.isArray(nd.text)&&nd.text.length>0&&typeof nd.text[0]==="string"){
+                      txt=nd.text[0];
+                    }else{
+                      for(const [k,v] of Object.entries(nd)){
+                        if(Array.isArray(v)&&v.length>0&&typeof v[0]==="string"){txt=v[0];break;}
+                      }
+                    }
+                    if(txt){
+                      S.prompt=txt;S.promptLLM=txt;persist();
+                      promptTA.value=txt;llmPromptTA.value="";
+                      done=true;
+                    }
+                  }
+                }
+              }catch(e){console.warn("[FluxKlein] LLM poll:",e);}
+            }
+            if(!done){showError("LLM: timeout.");}
+          }catch(e){showError("LLM: "+fmtErr(e));}
+          resetBtn();
+          return;
+        }
+
         const _isBase=_isBaseModel();
         const _setAdv=(samplerNodeId,skipDenoise)=>{
           const steps=S.advancedUI?(S.steps||4):(_isBase?20:4);
@@ -7880,7 +8446,11 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         editPanel.style.display=activePill==="edit"?"flex":"none";
         inpaintPanel.style.display=activePill==="inpaint"?"flex":"none";
         faceswapPanel.style.display=activePill==="faceswap"?"flex":"none";
-        resSect.style.display=(activePill==="inpaint"||activePill==="faceswap"||activePill==="i2i")?"none":"flex";
+        llmPanel.style.display=activePill==="llm"?"flex":"none";
+        llmCopyToClip.style.display=activePill==="llm"?"":"none";
+        _promptEnhanceBtn.style.display=(activePill==="t2i"||activePill==="i2i"||activePill==="inpaint"||activePill==="edit")?"flex":"none";
+        postActionRow.style.display=(activePill==="llm"||!_lastGenObj)?"none":"flex";
+        resSect.style.display=(activePill==="inpaint"||activePill==="faceswap"||activePill==="i2i"||activePill==="llm")?"none":"flex";
         updateSizeControls();
       }
 
@@ -8507,9 +9077,13 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
             S.randomizeSeed=false; S.seed=meta.seed;
             seedInp.setVal(meta.seed); _advSeedInp.setVal(meta.seed); _advSeedRefresh();
           }
-          // LoRAs — always reset all slots first, then apply what meta has
-          _ulRowEls.forEach((r,i)=>{
-            S.userLoras[i]={name:"",strength:0};
+          // LoRAs — grow rows to match metadata, reset, then apply
+          if(Array.isArray(meta.userLoras)&&meta.userLoras.length&&_loraList.length){
+            while(_ulRowEls.length<meta.userLoras.length&&_ulRowEls.length<MAX_LORA_SLOTS)
+              _addULRow();
+          }
+          _ulRowEls.forEach((r)=>{
+            r._lora.name=""; r._lora.strength=0;
             r._dd.set("none"); r._str.value="0";
           });
           if(Array.isArray(meta.userLoras)&&meta.userLoras.length&&_loraList.length){
@@ -8521,8 +9095,8 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
               const match=loraOpts.find(o=>nd(o)===nd(ul.n||""))||
                 loraOpts.find(o=>nd(o).split("/").pop()===basename);
               if(match&&match!=="none"){
-                S.userLoras[i].name=match; S.userLoras[i].strength=+(ul.s??1);
-                _ulRowEls[i]._dd.set(match); _ulRowEls[i]._str.value=String(S.userLoras[i].strength);
+                _ulRowEls[i]._lora.name=match; _ulRowEls[i]._lora.strength=+(ul.s??1);
+                _ulRowEls[i]._dd.set(match); _ulRowEls[i]._str.value=String(_ulRowEls[i]._lora.strength);
               }
             });
           }
@@ -8576,6 +9150,104 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         const upd=await up.json();
         return upd.name||v.filename;
       };
+
+      const _setPostUpscaleRunning=(running,activeBtn,activeLabel)=>{
+        genBtn.disabled=running;
+        [seedvrBtn,ultraSharpBtn].forEach(btn=>{
+          btn.disabled=running;
+          btn.style.cursor=running?"wait":"pointer";
+          btn.style.opacity=running?".62":"";
+          btn.style.transform="";
+        });
+        if(running&&activeBtn){
+          tx(activeBtn,"Upscaling…");
+          activeBtn.style.opacity=".95";
+          activeBtn.style.borderColor=LIME;
+          activeBtn.style.color=LIME;
+          activeBtn.style.background="linear-gradient(90deg,rgba(240,255,65,.18),rgba(255,255,255,.06),rgba(240,255,65,.18))";
+        } else {
+          _resetPostActionBtn(seedvrBtn,"SeedVR2");
+          _resetPostActionBtn(ultraSharpBtn,"4x Upscaler");
+        }
+      };
+
+      const _runPostUpscale=async(cfg)=>{
+        if(S.generating) return;
+        if(activePill==="llm"){showError(`${cfg.label} is available for image-generation outputs only.`);return;}
+        if(cfg.validate&&!cfg.validate()) return;
+        const src=_lastGenObj;
+        if(!src||!src.filename){showError(`Generate an image first, then upscale with ${cfg.label}.`);return;}
+        clearError();S.generating=true;S._llmActive=false;S._seedvr2Active=cfg.mode==="seedvr2";S._ultrasharpActive=cfg.mode==="ultrasharp";
+        S._preRunFiles=new Set();
+        progWrap.style.display="flex";
+        setStage("Upscaling…",`Preparing ${cfg.label} workflow…`,0);
+        previewDelBtn.style.display="none";
+        previewDimsLbl.style.display="none";
+        _setPostUpscaleRunning(true,cfg.button,cfg.label);
+        requestAnimationFrame(()=>{
+          stopBtn.style.maxWidth="120px";stopBtn.style.minWidth="";stopBtn.style.width="";stopBtn.style.opacity="1";stopBtn.style.padding="0 14px";stopBtn.style.marginLeft="6px";
+        });
+        try{
+          const prevR=await api.fetchApi("/flux_klein/gallery?offset=0&limit=200&subfolder=one-node-flux-2-klein");
+          const prevD=await prevR.json();
+          S._preRunFiles=new Set((prevD.images||[]).map(v=>v.key||((v.subfolder?`${v.subfolder}/`:"")+v.filename)));
+        }catch(e){ S._preRunFiles=new Set(); }
+        try{
+          setStage("Upscaling…","Uploading source image…",3);
+          const inputName=await _uploadOutputToInput(src);
+          setStage("Upscaling…",`Loading ${cfg.label} workflow…`,6);
+          const r=await api.fetchApi(cfg.endpoint);
+          if(!r.ok) throw new Error("HTTP "+r.status);
+          const wfData=await r.json();
+          const prompt=JSON.parse(JSON.stringify(wfData));
+          const set=(id,key,val)=>{ if(prompt[id]) prompt[id].inputs[key]=val; };
+          const meta=cfg.patch({prompt,set,inputName:inputName||src.filename,src});
+          S._pendingMeta={v:1,mode:cfg.mode,prompt:S.prompt||"",image1:inputName||src.filename,...meta};
+          persist();
+          setStage("Upscaling…",`Queueing ${cfg.label} workflow…`,8);
+          const resp=await api.fetchApi("/prompt",{
+            method:"POST",headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({prompt,client_id:api.clientId,extra_data:{enable_previews:true}}),
+          });
+          const result=await resp.json();
+          const wfErrs=Object.entries(result.node_errors||{}).filter(([k])=>k!==String(self.id));
+          if(result.error){showError(fmtErr(result.error));resetBtn();return;}
+          if(wfErrs.length){showError(fmtErr(wfErrs[0][1]));resetBtn();return;}
+          _activePromptId=result.prompt_id||null;
+          console.log(`[FluxKlein] ${cfg.label} queued:`,result.prompt_id);
+        }catch(e){showError(`${cfg.label}: `+fmtErr(e));resetBtn();}
+      };
+
+      seedvrBtn.onclick=()=>_runPostUpscale({
+        mode:"seedvr2",label:"SeedVR2",button:seedvrBtn,endpoint:"/flux_klein/workflow_seedvr2",
+        validate:()=>{
+          if(!S.seedvr2Model||S.seedvr2Model==="none"){showError("SeedVR2: select a SeedVR2 model in Settings.");return false;}
+          return true;
+        },
+        patch:({set,inputName,src})=>{
+          const seedMax=4294967295;
+          const seed=S.randomizeSeed?Math.floor(Math.random()*(seedMax+1)):Math.max(0,Math.min(seedMax,Math.floor(S.seed||0)));
+          if(S.randomizeSeed||S.seed!==seed){S.seed=seed;seedInp.setVal(seed);_advSeedInp.setVal(seed);_advSeedRefresh();persist();}
+          set("FKSV:load","image",inputName);
+          set("FKSV:dit","model",S.seedvr2Model);
+          set("FKSV:upscale","seed",seed);
+          set("FKSV:save","filename_prefix","one-node-flux-2-klein/FK");
+          return {seed,randomizeSeed:S.randomizeSeed,seedvr2Model:S.seedvr2Model,seedvr2Source:{filename:src.filename,subfolder:src.subfolder||""}};
+        },
+      });
+      ultraSharpBtn.onclick=()=>_runPostUpscale({
+        mode:"ultrasharp",label:"4x Upscaler",button:ultraSharpBtn,endpoint:"/flux_klein/workflow_ultrasharp",
+        validate:()=>{
+          if(!S.upscaleModel||S.upscaleModel==="none"){showError("4x Upscaler: select an upscale model in Settings.");return false;}
+          return true;
+        },
+        patch:({set,inputName,src})=>{
+          set("FKUS:load","image",inputName);
+          set("FKUS:model","model_name",S.upscaleModel);
+          set("FKUS:save","filename_prefix","one-node-flux-2-klein/F2K_upscaled");
+          return {ultrasharpModel:S.upscaleModel,ultrasharpSource:{filename:src.filename,subfolder:src.subfolder||""}};
+        },
+      });
 
       // Loads a gallery output image into Image 1 slot and switches to EDIT. Does not touch the preview box.
       const _lbLoadIntoUI=async(v)=>{
@@ -8693,6 +9365,19 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
           thumb.loading="lazy";
           thumb.src=_galImgUrl(v)+"&t="+v.mtime;
 
+          const dimStrip=mk("div",{
+            position:"absolute",bottom:"17px",left:"0",right:"0",
+            padding:"2px 6px",fontSize:"7px",color:"rgba(255,255,255,.78)",
+            background:"rgba(0,0,0,.48)",textAlign:"center",pointerEvents:"none",
+            letterSpacing:".03em",display:"none",
+          });
+          thumb.onload=()=>{
+            if(thumb.naturalWidth&&thumb.naturalHeight){
+              tx(dimStrip,`${thumb.naturalWidth}×${thumb.naturalHeight}`);
+              dimStrip.style.display="block";
+            }
+          };
+
           // Hover overlay
           const ov=mk("div",{position:"absolute",inset:"0",background:"rgba(0,0,0,.35)",
             opacity:"0",transition:"opacity .15s",pointerEvents:"none"});
@@ -8716,7 +9401,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
           favIco.className="_favico";
           favIco.appendChild(_mkHeart("11px"));
 
-          cell.append(thumb,ov,strip,favIco);
+          cell.append(thumb,ov,dimStrip,strip,favIco);
 
           cell.onmouseenter=()=>{ cell.style.borderColor=LIME;ov.style.opacity="1"; };
           cell.onmouseleave=()=>{ cell.style.borderColor=C.border;ov.style.opacity="0"; };
@@ -9034,16 +9719,16 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
           const loraList=(d.loras||[]).filter(f=>f!=="none");
           _loraList=loraList;
           const loraOpts=["none",...loraList];
-          _ulRowEls.forEach((r,i)=>{
+          _ulRowEls.forEach((r)=>{
             r._dd.updateItems(loraOpts);
-            const saved=S.userLoras[i].name;
+            const saved=r._lora.name;
             if(saved&&saved!=="none"&&loraList.length){
               const nd=(s)=>s.replace(/\\/g,"/").toLowerCase();
               const match=loraOpts.find(o=>nd(o)===nd(saved))||
                 loraOpts.find(o=>nd(o).split("/").pop()===nd(saved).split("/").pop());
-              if(match){r._dd.set(match);S.userLoras[i].name=match;}
-              else{r._dd.set("none");S.userLoras[i].name="";}
-            } else{r._dd.set("none");S.userLoras[i].name="";}
+              if(match){r._dd.set(match);r._lora.name=match;}
+              else{r._dd.set("none");r._lora.name="";}
+            } else{r._dd.set("none");r._lora.name="";}
           });
           _ulUpdateBtn();
           // Faceswap LoRA dropdown
@@ -9059,6 +9744,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         })
         .catch(e=>console.warn("[FluxKlein] models:",e));
       _loadModels();
+      _loadLLMModels();
       if(S.extLoaders) _applyExtLoaders(true);
 
       // Auto-refresh Settings dropdowns when connections change

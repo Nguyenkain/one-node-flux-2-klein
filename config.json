@@ -4,7 +4,9 @@
     "inpaint": "Edit the masked area: [DESCRIBE THE CHANGE — add, remove, replace, or modify the content]. Seamlessly blend with the surrounding scene, preserving the original lighting, shadows, depth of field, and photo grain.",
     "outpaint": "Extend the composition of this image. Replace all black or empty spaces with a logical continuation of the background and foreground. Ensure the transition is invisible and the new elements perfectly match the perspective and color palette of the original image. Scene description: [briefly describe what should appear in the expanded areas]"
   },
-  "lora_triggers_custom": {},
+  "lora_triggers_custom": {
+    "f2k_hand_pov_8000s.safetensors": "POV hand"
+  },
   "t2i_templates": [
     {
       "name": "Foggy street deer",

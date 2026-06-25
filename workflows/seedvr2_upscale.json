@@ -1,0 +1,77 @@
+{
+  "FKSV:load": {
+    "inputs": {
+      "image": "placeholder.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": { "title": "Load Image" }
+  },
+  "FKSV:alpha": {
+    "inputs": {
+      "image": ["FKSV:load", 0],
+      "alpha": ["FKSV:load", 1]
+    },
+    "class_type": "JoinImageWithAlpha",
+    "_meta": { "title": "Join Image With Alpha" }
+  },
+  "FKSV:dit": {
+    "inputs": {
+      "model": "seedvr2_ema_7b_sharp_fp16.safetensors",
+      "device": "cuda:0",
+      "blocks_to_swap": 36,
+      "swap_io_components": false,
+      "offload_device": "cpu",
+      "cache_model": false,
+      "attention_mode": "sageattn_2"
+    },
+    "class_type": "SeedVR2LoadDiTModel",
+    "_meta": { "title": "SeedVR2 Load DiT Model" }
+  },
+  "FKSV:vae": {
+    "inputs": {
+      "model": "ema_vae_fp16.safetensors",
+      "device": "cuda:0",
+      "encode_tiled": true,
+      "encode_tile_size": 1024,
+      "encode_tile_overlap": 128,
+      "decode_tiled": true,
+      "decode_tile_size": 1024,
+      "decode_tile_overlap": 128,
+      "tile_debug": "false",
+      "offload_device": "cpu",
+      "cache_model": false
+    },
+    "class_type": "SeedVR2LoadVAEModel",
+    "_meta": { "title": "SeedVR2 Load VAE Model" }
+  },
+  "FKSV:upscale": {
+    "inputs": {
+      "image": ["FKSV:alpha", 0],
+      "dit": ["FKSV:dit", 0],
+      "vae": ["FKSV:vae", 0],
+      "seed": 0,
+      "control_after_generate": "randomize",
+      "resolution": 4096,
+      "max_resolution": 4096,
+      "batch_size": 5,
+      "uniform_batch_size": false,
+      "color_correction": "lab",
+      "temporal_overlap": 0,
+      "prepend_frames": 0,
+      "input_noise_scale": 0,
+      "latent_noise_scale": 0,
+      "offload_device": "cpu",
+      "enable_debug": false
+    },
+    "class_type": "SeedVR2VideoUpscaler",
+    "_meta": { "title": "SeedVR2 Video Upscaler" }
+  },
+  "FKSV:save": {
+    "inputs": {
+      "filename_prefix": "one-node-flux-2-klein/FK",
+      "images": ["FKSV:upscale", 0]
+    },
+    "class_type": "SaveImage",
+    "_meta": { "title": "Save SeedVR2 Image" }
+  }
+}

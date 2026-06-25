@@ -1,3 +1,42 @@
+# Bytecode
 __pycache__/
+*.py[cod]
+*.pyo
+
+# Runtime persistent state (user-specific)
 favorites.json
+
+# Logs
+logs/*.log
+logs/*.txt
+logs/*.json
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Project-specific
 CLAUDE.md
+
+# Keep directory structure
+!logs/.gitkeep
+!scripts/.gitkeep

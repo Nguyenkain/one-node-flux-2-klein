@@ -33,7 +33,7 @@
   },
   "FK:156": {
     "inputs": {
-      "text": "low quality, deformed, blurry, watermark, ugly, bad anatomy",
+      "text": "low quality, worst quality, blurry, out of focus, watermark, text, logo, jpeg artifacts, overexposed, underexposed, deformed, disfigured, mutated anatomy, bad anatomy, bad proportions, gross proportions, unnatural pose, twisted body, broken limbs, extra limbs, missing limbs, extra arms, extra hands, extra fingers, fused fingers, malformed hands, poorly drawn hands, extra legs, missing legs, malformed feet, poorly drawn face, distorted face, asymmetrical eyes, cross-eye, duplicate person, cloned body parts",
       "clip": ["FK:155", 0]
     },
     "class_type": "CLIPTextEncode",
