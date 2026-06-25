@@ -953,25 +953,33 @@ app.registerExtension({
         const node=app.graph.getNodeById(self.id)||self;
         if(!node) return;
         if(enabled){
-          const existing=(node.inputs||[]).filter(i=>_extInputNames.includes(i.name));
-          if(existing.length===0){
-            _extInputNames.forEach((name,i)=>{
+          // Add any missing ext slots individually — some may already exist if a
+          // connected one (e.g. GGUF) was kept after a previous toggle-off.
+          _extInputNames.forEach((name,i)=>{
+            const has=(node.inputs||[]).some(inp=>inp.name===name);
+            if(!has){
               const type=i===0?"MODEL":i===1?"CLIP":"VAE";
               node.addInput(name,type);
               const slot=node.inputs[node.inputs.length-1];
               if(slot) slot.color_on=_extInputColors[i];
-            });
-          }
-          const n=(node.inputs||[]).length;
+            }
+          });
+          const n=(node.inputs||[]).filter(i=>_extInputNames.includes(i.name)).length;
           node.size=[NODE_W, NODE_H+n*_slotH];
           node.setDirtyCanvas(true,true);
         } else {
+          // Turning the toggle off removes the empty slots, but KEEPS any slot that
+          // still has a wire connected (e.g. a GGUF loader). That way you can flip the
+          // toggle off to expose the fp8 dropdowns without losing your GGUF hookup —
+          // switching fp8 <-> GGUF is then just connecting/disconnecting the wire.
           if(node.inputs&&node.inputs.length>0){
             for(let i=node.inputs.length-1;i>=0;i--){
-              if(_extInputNames.includes(node.inputs[i].name)) node.removeInput(i);
+              const inp=node.inputs[i];
+              if(_extInputNames.includes(inp.name)&&inp.link==null) node.removeInput(i);
             }
           }
-          node.size=[NODE_W, NODE_H];
+          const remaining=(node.inputs||[]).filter(i=>_extInputNames.includes(i.name)).length;
+          node.size=[NODE_W, NODE_H+remaining*_slotH];
           node.setDirtyCanvas(true,true);
         }
       };
@@ -1248,8 +1256,11 @@ app.registerExtension({
       settingsBtn.onmouseleave=()=>{settingsBtn.style.borderColor=C.borderH;settingsBtn.style.color=C.muted;settGear.style.transform="";};
       const _refreshExtInputUI=()=>{
         const n=app.graph.getNodeById(self.id);
-        const isConn=(name)=>{
-          if(!n||!n.inputs) return false;
+        // Only dim a dropdown when external inputs are ENABLED and that slot is wired.
+        // With the toggle off, the dropdowns are always live (their model is used),
+        // even if a GGUF wire is still physically connected.
+        const isActive=(name)=>{
+          if(!S.extLoaders||!n||!n.inputs) return false;
           const slot=n.inputs.find(i=>i.name===name);
           return slot&&slot.link!=null;
         };
@@ -1258,9 +1269,9 @@ app.registerExtension({
           wrap.style.pointerEvents=connected?"none":"";
           wrap.title=connected?"Connected externally — disconnect to use dropdown":"";
         };
-        dim(modelF.wrap,isConn("model"));
-        dim(teF.wrap,  isConn("clip"));
-        dim(vaeF.wrap, isConn("vae"));
+        dim(modelF.wrap,isActive("model"));
+        dim(teF.wrap,  isActive("clip"));
+        dim(vaeF.wrap, isActive("vae"));
       };
       settingsBtn.onclick=e=>{e.stopPropagation();_refreshExtInputUI();openOverlay(settingsOverlay);};
       settClose.onclick=()=>closeOverlayFade(settingsOverlay);
@@ -7944,6 +7955,9 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         // The external node is serialized and added to the prompt so ComfyUI can find it.
         const _selfNode=app.graph.getNodeById(self.id);
         const _extSlot=(name)=>{
+          // Toggle off = external inputs are ignored even if a wire is still connected;
+          // the internal dropdown model is used. The toggle is the single source of truth.
+          if(!S.extLoaders) return null;
           if(!_selfNode) return null;
           const inputs=_selfNode.inputs||[];
           const slot=inputs.find(i=>i.name===name);
@@ -9656,7 +9670,18 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         })
         .catch(e=>console.warn("[FluxKlein] models:",e));
       _loadModels();
-      if(S.extLoaders) _applyExtLoaders(true);
+      if(S.extLoaders){
+        _applyExtLoaders(true);
+      } else {
+        // Toggle is off, but a GGUF wire may have been kept connected (and restored
+        // by litegraph from the saved workflow). Resize the node to fit any such slots.
+        const _n=app.graph.getNodeById(self.id)||self;
+        if(_n){
+          const _keep=(_n.inputs||[]).filter(i=>_extInputNames.includes(i.name)).length;
+          if(_keep>0){ _n.size=[NODE_W, NODE_H+_keep*_slotH]; _n.setDirtyCanvas(true,true); }
+        }
+      }
+      _refreshExtInputUI();
 
       // Auto-refresh Settings dropdowns when connections change
       self.onConnectionsChange=function(){ _refreshExtInputUI(); };
