@@ -2265,6 +2265,7 @@ app.registerExtension({
         _sketchSize=v;
         _sketchSizeSlider.value=String(Math.min(v,500));_sketchSizeNumInp.value=String(v);
       });
+      _skSizeRow.title="Brush size — [ smaller · ] larger  (Shift = ×10)";
       // Allow typing beyond slider max — number input has no hard cap
       _skSizeRow.querySelector("input[type=number]").removeAttribute("max");
       const _skSoftRow=_mkSliderRow("Hardness",0,100,100,(v)=>{ _sketchSoftness=1-v/100; });
@@ -4081,6 +4082,11 @@ app.registerExtension({
           case"r":case"R":e.preventDefault();e.stopPropagation();_sketchSetTool("rect");break;
           case"c":case"C":e.preventDefault();e.stopPropagation();_sketchSetTool("circle");break;
           case"v":case"V":e.preventDefault();e.stopPropagation();_sketchSetTool("move");break;
+          // Photoshop / Krita style brush-size shortcuts ( [ smaller, ] larger; shift = ×10 )
+          case"[":e.preventDefault();e.stopPropagation();_sketchSetSize(_sketchSize-1);break;
+          case"]":e.preventDefault();e.stopPropagation();_sketchSetSize(_sketchSize+1);break;
+          case"{":e.preventDefault();e.stopPropagation();_sketchSetSize(_sketchSize-10);break;
+          case"}":e.preventDefault();e.stopPropagation();_sketchSetSize(_sketchSize+10);break;
           case"Delete":case"Backspace":
             e.preventDefault();e.stopPropagation();
             if(_sketchLayers.length>1){
@@ -4237,6 +4243,7 @@ app.registerExtension({
         display:"none",flexDirection:"column",boxSizing:"border-box",
         opacity:"0",transition:"opacity 0.15s ease",
       });
+      _maskOv.setAttribute("tabindex","-1"); // focusable so keyboard shortcuts work
 
       // ── Shared state ──────────────────────────────────────────────────────
       let _maskMode="inpaint";   // "inpaint" | "outpaint"
@@ -4247,6 +4254,7 @@ app.registerExtension({
       let _maskHardness=1; // 1=hard, 0=fully soft
       let _maskDrawing=false;
       let _maskLastX=0,_maskLastY=0;
+      let _maskRectStart=null,_maskRectEnd=null; // marquee (rectangle select) drag corners, canvas coords
       let _maskCanvasW=512,_maskCanvasH=512;
       let _maskHistory=[];
       let _maskSourceImgEl=null;
@@ -4268,6 +4276,13 @@ app.registerExtension({
         transform:"translate(-50%,-50%)",
       });
       _maskCanvasWrap.appendChild(_maskCursor);
+
+      // Marquee (rectangle select) preview — inside the wrap so it scales with zoom
+      const _maskRectPreview=mk("div",{
+        position:"absolute",border:`2px dashed ${LIME}`,background:"rgba(240,255,65,.18)",
+        pointerEvents:"none",display:"none",zIndex:"11",boxSizing:"border-box",
+      });
+      _maskCanvasWrap.appendChild(_maskRectPreview);
 
       // Outpaint handles overlay (sits on top of canvas wrap, same coordinate space)
       const _opHandleOv=mk("div",{
@@ -4385,6 +4400,37 @@ app.registerExtension({
         for(let i=0;i<=steps;i++){const t=i/steps;_maskDraw(x1+t*(x2-x1),y1+t*(y2-y1));}
       };
 
+      // ── Marquee (rectangle select) — drag a box to mask a rectangular area ──
+      const _maskUpdateRectPreview=()=>{
+        if(!_maskRectStart||!_maskRectEnd){ _maskRectPreview.style.display="none"; return; }
+        const x0=Math.min(_maskRectStart.x,_maskRectEnd.x);
+        const y0=Math.min(_maskRectStart.y,_maskRectEnd.y);
+        const w=Math.abs(_maskRectEnd.x-_maskRectStart.x);
+        const h=Math.abs(_maskRectEnd.y-_maskRectStart.y);
+        _maskRectPreview.style.display="block";
+        _maskRectPreview.style.left=x0+"px";_maskRectPreview.style.top=y0+"px";
+        _maskRectPreview.style.width=w+"px";_maskRectPreview.style.height=h+"px";
+      };
+      const _maskCommitRect=()=>{
+        _maskRectPreview.style.display="none";
+        if(!_maskRectStart||!_maskRectEnd){ _maskRectStart=null;_maskRectEnd=null; return; }
+        const x0=Math.max(0,Math.min(_maskRectStart.x,_maskRectEnd.x));
+        const y0=Math.max(0,Math.min(_maskRectStart.y,_maskRectEnd.y));
+        const x1=Math.min(_maskCanvasW,Math.max(_maskRectStart.x,_maskRectEnd.x));
+        const y1=Math.min(_maskCanvasH,Math.max(_maskRectStart.y,_maskRectEnd.y));
+        _maskRectStart=null;_maskRectEnd=null;
+        const w=x1-x0,h=y1-y0;
+        if(w<1||h<1) return;
+        _maskSaveHistory();
+        const ctx=_maskCtx();
+        ctx.save();
+        ctx.globalCompositeOperation="source-over";
+        ctx.fillStyle="rgba(255,255,255,1)";
+        ctx.fillRect(x0,y0,w,h);
+        ctx.restore();
+        _maskComposite();
+      };
+
       // ── Top bar ───────────────────────────────────────────────────────────
       const _maskTopBar=mk("div",{
         display:"flex",alignItems:"center",gap:"6px",padding:"6px 10px",
@@ -4437,18 +4483,24 @@ app.registerExtension({
       };
       const _maskBrushBtn=_mkMaskToolBtn("●","Brush");
       const _maskEraserBtn=_mkMaskToolBtn("○","Eraser");
+      const _maskRectBtn=_mkMaskToolBtn("▭","Rect");
+      _maskRectBtn.title="Rectangle marquee — drag to mask a rectangular area [R]";
 
       const _maskSetTool=(t)=>{
         _maskTool=t;
         _maskBrushBtn._setActive(t==="brush");
         _maskEraserBtn._setActive(t==="eraser");
-        if(_maskMode==="inpaint") _maskViewport.style.cursor="none";
+        _maskRectBtn._setActive(t==="rect");
+        if(_maskMode==="inpaint") _maskViewport.style.cursor=t==="rect"?"crosshair":"none";
+        if(t==="rect") _maskCursor.style.display="none";
       };
       _maskBrushBtn.onclick=()=>_maskSetTool("brush");
       _maskEraserBtn.onclick=()=>_maskSetTool("eraser");
+      _maskRectBtn.onclick=()=>_maskSetTool("rect");
 
       // Brush size group — compact for single-row layout
       const _maskSizeLbl=mk("div",{fontSize:"8px",color:C.muted,whiteSpace:"nowrap",flexShrink:"0"});tx(_maskSizeLbl,"Size");
+      _maskSizeLbl.title="Brush size — [ smaller · ] larger  (Shift = larger steps)";
       const _maskSizeSlider=mk("input",{width:"60px",accentColor:LIME,flexShrink:"0"},{type:"range",min:"2",max:"500",step:"1",value:String(_maskSize)});
       const _maskSizeNum=mk("input",{
 width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
@@ -4483,7 +4535,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       _maskHardNum.oninput=()=>_maskSyncHard(_maskHardNum.value);
 
       // Brush-only controls group (hidden in outpaint mode)
-      const _maskBrushGroup=[_maskBrushBtn,_maskEraserBtn,_mkMaskSep(),_maskSizeLbl,_maskSizeSlider,_maskSizeNum,_mkMaskSep(),_maskHardLbl,_maskHardSlider,_maskHardNum,_mkMaskSep(),_maskUndoBtn,_maskClearBtn,_mkMaskSep()];
+      const _maskBrushGroup=[_maskBrushBtn,_maskEraserBtn,_maskRectBtn,_mkMaskSep(),_maskSizeLbl,_maskSizeSlider,_maskSizeNum,_mkMaskSep(),_maskHardLbl,_maskHardSlider,_maskHardNum,_mkMaskSep(),_maskUndoBtn,_maskClearBtn,_mkMaskSep()];
 
       // Confirm / Cancel
       const _maskSpacer=mk("div",{flex:"1"});
@@ -4804,7 +4856,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         _maskMode=m;
         _rebuildMaskTopBar();
         const isInp=m==="inpaint";
-        _maskViewport.style.cursor=isInp?"none":"default";
+        _maskViewport.style.cursor=isInp?(_maskTool==="rect"?"crosshair":"none"):"default";
         _maskDropZone.style.cursor=isInp?"none":"pointer";
         _maskCursor.style.display="none";
         _opShowHandles(!isInp);
@@ -5002,7 +5054,9 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         // is irrelevant and confusing (shows as red overlay). Mask is rebuilt at Apply Changes.
         if(mode==="outpaint"){ _maskSavedData=null;_maskSavedW=0;_maskSavedH=0; }
         _opRow2.style.display="none";
+        _maskRectStart=null;_maskRectEnd=null;_maskRectPreview.style.display="none";
         _maskOv.style.display="flex";
+        _maskOv.focus();
         requestAnimationFrame(()=>_maskOv.style.opacity="1");
         _setMaskMode(mode||"inpaint");
         _maskSetTool("brush");_maskSyncSize(_maskSize);
@@ -5074,6 +5128,12 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         if(e.button!==0||_maskMode!=="inpaint") return;
         const pos=_maskCanvasCoords(e);
         if(pos.x<0||pos.y<0||pos.x>_maskCanvasW||pos.y>_maskCanvasH) return;
+        if(_maskTool==="rect"){
+          _maskDrawing=true;
+          _maskRectStart={x:pos.x,y:pos.y};_maskRectEnd={x:pos.x,y:pos.y};
+          _maskUpdateRectPreview();
+          return;
+        }
         _maskSaveHistory();
         _maskDrawing=true;_maskLastX=pos.x;_maskLastY=pos.y;
         _maskDraw(pos.x,pos.y);
@@ -5088,6 +5148,15 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
           return;
         }
         if(_maskMode!=="inpaint") return;
+        if(_maskTool==="rect"){
+          _maskCursor.style.display="none";
+          if(_maskDrawing&&_maskRectStart){
+            const pos=_maskCanvasCoords(e);
+            _maskRectEnd={x:Math.max(0,Math.min(_maskCanvasW,pos.x)),y:Math.max(0,Math.min(_maskCanvasH,pos.y))};
+            _maskUpdateRectPreview();
+          }
+          return;
+        }
         const {r}=_maskVpScale();
         if(e.clientX>=r.left&&e.clientY>=r.top&&e.clientX<=r.right&&e.clientY<=r.bottom){
           const pos=_maskCanvasCoords(e);
@@ -5106,7 +5175,8 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       });
 
       document.addEventListener("mouseup",()=>{
-        if(_maskPanning){_maskPanning=false;_maskViewport.style.cursor=_maskSpaceDown?"grab":(_maskMode==="inpaint"?"none":"default");}
+        if(_maskPanning){_maskPanning=false;_maskViewport.style.cursor=_maskSpaceDown?"grab":(_maskMode==="inpaint"?(_maskTool==="rect"?"crosshair":"none"):"default");}
+        if(_maskDrawing&&_maskTool==="rect") _maskCommitRect();
         _maskDrawing=false;
       });
 
@@ -5118,10 +5188,13 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         if(e.target.tagName==="INPUT") return;
         if(e.key==="b"||e.key==="B"){_setMaskMode("inpaint");_maskSetTool("brush");}
         if(e.key==="e"||e.key==="E"){_setMaskMode("inpaint");_maskSetTool("eraser");}
+        if(e.key==="r"||e.key==="R"){_setMaskMode("inpaint");_maskSetTool("rect");}
         if((e.ctrlKey||e.metaKey)&&e.key==="z") _maskUndo();
         if(e.key==="Escape") _maskCancelBtn.click();
         if(e.key==="[") _maskSyncSize(_maskSize-5);
         if(e.key==="]") _maskSyncSize(_maskSize+5);
+        if(e.key==="{") _maskSyncSize(_maskSize-25);
+        if(e.key==="}") _maskSyncSize(_maskSize+25);
       },{capture:true});
 
       // ── Confirm ───────────────────────────────────────────────────────────
