@@ -38,6 +38,34 @@ const WF = {
   refPos2:      "FK:233",   // ReferenceLatent positive img2
   refNeg2:      "FK:231",   // ReferenceLatent negative img2
 };
+const WFK = {
+  model:      "KREA:MODEL",
+  textEnc:    "KREA:CLIP",
+  vae:        "KREA:VAE",
+  builder:    "KREA:BUILDER",
+  promptPos:  "KREA:POS",
+  promptNeg:  "KREA:NEGBASE",
+  negZero:    "KREA:NEG",
+  rebalance:  "KREA:REB",
+  latent:     "KREA:LATENT",
+  sampler:    "KREA:KS",
+  decode:     "KREA:DECODE",
+  saveImage:  "KREA:SAVE",
+};
+const WFKI2I = {
+  model:      "KREAI2I:MODEL",
+  textEnc:    "KREAI2I:CLIP",
+  vae:        "KREAI2I:VAE",
+  loadImage:  "KREAI2I:LOAD",
+  vaeEnc:     "KREAI2I:VAEENC",
+  promptPos:  "KREAI2I:POS",
+  promptNeg:  "KREAI2I:NEGBASE",
+  negZero:    "KREAI2I:NEG",
+  rebalance:  "KREAI2I:REB",
+  sampler:    "KREAI2I:KS",
+  decode:     "KREAI2I:DECODE",
+  saveImage:  "KREAI2I:SAVE",
+};
 
 const LS_KEY = "one_node_flux_klein_state";
 const DEFAULT_NEG_PROMPT = "low quality, worst quality, blurry, out of focus, watermark, text, logo, jpeg artifacts, overexposed, underexposed, deformed, disfigured, mutated anatomy, bad anatomy, bad proportions, gross proportions, unnatural pose, twisted body, broken limbs, extra limbs, missing limbs, extra arms, extra hands, extra fingers, fused fingers, malformed hands, poorly drawn hands, extra legs, missing legs, malformed feet, poorly drawn face, distorted face, asymmetrical eyes, cross-eye, duplicate person, cloned body parts";
@@ -557,13 +585,41 @@ app.registerExtension({
       const self=this;
       const saved=loadState();
 
+      const _normUserLora=(ul={})=>({
+        name:typeof ul.name==="string"?ul.name:"",
+        strength:isFinite(+(ul.strength))?+(ul.strength):1.0,
+        disabled:ul.disabled===true,
+      });
+      const _emptyUserLora=()=>({name:"",strength:1.0,disabled:false});
+      const _normalizeUserLoraList=(list)=>{
+        const normalized=(Array.isArray(list)&&list.length?list:[_emptyUserLora()]).map(_normUserLora);
+        return normalized.length?normalized:[_emptyUserLora()];
+      };
+      const _normalizeUserLorasByFamily=(raw={})=>({
+        flux:_normalizeUserLoraList(raw.flux),
+        krea:_normalizeUserLoraList(raw.krea),
+      });
+      const _cloneUserLoras=(list)=>_normalizeUserLoraList(list).map(l=>({...l}));
+
       if(!self._fk_S){
+        const _legacyUserLoras=_normalizeUserLoraList(saved.userLoras);
+        const _savedUserLorasByFamily=saved.userLorasByFamily
+          ?_normalizeUserLorasByFamily(saved.userLorasByFamily)
+          :{flux:_cloneUserLoras(_legacyUserLoras),krea:_normalizeUserLoraList([])};
         self._fk_S={
           // Settings
           modelVariant: saved.modelVariant||"9b",      // "9b" | "9b-kv"
+          modelFamily:  saved.modelFamily||"flux",
           model:        saved.model||"",
           textEncoder:  saved.textEncoder||"",
           vae:          saved.vae||"",
+          kreaModel:    saved.kreaModel||"",
+          kreaTextEncoder: saved.kreaTextEncoder||"",
+          kreaVae:      saved.kreaVae||"",
+          kreaPromptMode: saved.kreaPromptMode||"plain",
+          kreaRebalanceMultiplier: saved.kreaRebalanceMultiplier!==undefined?saved.kreaRebalanceMultiplier:2,
+          kreaRebalanceBypass: saved.kreaRebalanceBypass||false,
+          kreaBuilder:  saved.kreaBuilder||{highLevelDescription:"",background:"",style:"photo",stylePhoto:"",aesthetics:"",lighting:"",medium:"",importMode:"when empty"},
           // Pill mode
           pill:         saved.pill||"t2i",              // "t2i" | "edit" | "inpaint" | "faceswap"
           // Resolution
@@ -611,7 +667,8 @@ app.registerExtension({
           promptPaint:  saved.promptPaint!==undefined?saved.promptPaint:(saved.pill==="inpaint"?saved.prompt||"":""),
           promptFs:     saved.promptFs!==undefined?saved.promptFs:(saved.pill==="faceswap"?saved.prompt||"":""),
           // LoRAs
-          userLoras:    saved.userLoras&&saved.userLoras.length?saved.userLoras:[{name:"",strength:1.0,disabled:false}],
+          userLorasByFamily:_savedUserLorasByFamily,
+          userLoras:    _cloneUserLoras(_savedUserLorasByFamily[saved.modelFamily||"flux"]),
           // Generation state
           generating:   false,
           _pendingMeta: null,
@@ -626,13 +683,21 @@ app.registerExtension({
         };
       }
       const S=self._fk_S;
-      const _normUserLora=(ul={})=>({
-        name:typeof ul.name==="string"?ul.name:"",
-        strength:isFinite(+(ul.strength))?+(ul.strength):1.0,
-        disabled:ul.disabled===true,
-      });
+      const _ensureFamilyUserLoras=(family)=>{
+        S.userLorasByFamily=_normalizeUserLorasByFamily(S.userLorasByFamily||{});
+        return S.userLorasByFamily[family]||S.userLorasByFamily.flux;
+      };
+      const _stashCurrentUserLoras=()=>{
+        S.userLoras=_normalizeUserLoraList(S.userLoras);
+        S.userLorasByFamily=_normalizeUserLorasByFamily(S.userLorasByFamily||{});
+        S.userLorasByFamily[S.modelFamily]=_cloneUserLoras(S.userLoras);
+      };
+      const _loadFamilyUserLoras=(family)=>{
+        S.userLoras=_cloneUserLoras(_ensureFamilyUserLoras(family));
+      };
       const _isActiveUserLora=(ul)=>!!(ul&&ul.name&&ul.name!=="none"&&!ul.disabled&&+(ul.strength||0)>0);
-      S.userLoras=(Array.isArray(S.userLoras)&&S.userLoras.length?S.userLoras:[{name:"",strength:1.0,disabled:false}]).map(_normUserLora);
+      S.userLorasByFamily=_normalizeUserLorasByFamily(S.userLorasByFamily||{});
+      _loadFamilyUserLoras(S.modelFamily);
       // Sync S.prompt to the active pill's slot on init (covers first load before _pillPromptKey is available)
       {
         const _initKey=S.pill==="edit"?"promptEdit":S.pill==="inpaint"?"promptPaint":S.pill==="faceswap"?"promptFs":S.pill==="i2i"?"promptI2i":S.pill==="llm"?"promptLLM":"promptT2i";
@@ -643,10 +708,13 @@ app.registerExtension({
 
       const persist=()=>{
         S.soundEnabled=soundEnabled;
-        S.userLoras=(Array.isArray(S.userLoras)?S.userLoras:[]).map(_normUserLora);
+        _stashCurrentUserLoras();
         saveState({
-          modelVariant:S.modelVariant, model:S.model,
-          textEncoder:S.textEncoder, vae:S.vae,
+          modelVariant:S.modelVariant, modelFamily:S.modelFamily,
+          model:S.model, textEncoder:S.textEncoder, vae:S.vae,
+          kreaModel:S.kreaModel, kreaTextEncoder:S.kreaTextEncoder, kreaVae:S.kreaVae,
+          kreaPromptMode:S.kreaPromptMode, kreaRebalanceMultiplier:S.kreaRebalanceMultiplier,
+          kreaRebalanceBypass:S.kreaRebalanceBypass, kreaBuilder:S.kreaBuilder,
           pill:S.pill,
           resLabel:S.resLabel, resW:S.resW, resH:S.resH,
           isCustomRes:S.isCustomRes, customW:S.customW, customH:S.customH,
@@ -659,7 +727,7 @@ app.registerExtension({
           promptPaint:S.promptPaint, promptFs:S.promptFs, promptI2i:S.promptI2i, promptLLM:S.promptLLM,
           llmModel:S.llmModel, llmMmproj:S.llmMmproj, llmSystemPromptFile:S.llmSystemPromptFile, llmImage:S.llmImage, llmResult:S.llmResult,
           i2iImage:S.i2iImage, i2iDenoise:S.i2iDenoise, i2iResizeLonger:S.i2iResizeLonger,
-          userLoras:S.userLoras, soundEnabled, extLoaders:S.extLoaders,
+          userLorasByFamily:S.userLorasByFamily, userLoras:S.userLoras, soundEnabled, extLoaders:S.extLoaders,
           downscaleRef:S.downscaleRef, downscaleRefMP:S.downscaleRefMP,
         });
       };
@@ -905,12 +973,38 @@ app.registerExtension({
         return{wrap,dd};
       };
 
+      let _refreshPromptModeUI=null;
+      let _refreshKreaCtrlBar=null;
+      // Row 0: Model family — own row, full width, kept separate so it never breaks the model grid layout
+      const familyRow=mk("div",{marginBottom:"10px"});
+      const familyF =mkModDD("Model family",  "Switch the whole pipeline between Flux and Krea", S.modelFamily, v=>{
+        const nextFamily=v||"flux";
+        if(nextFamily!==S.modelFamily) _stashCurrentUserLoras();
+        S.modelFamily=nextFamily;
+        _loadFamilyUserLoras(S.modelFamily);
+        if(typeof _ulRebuildRows==="function") _ulRebuildRows();
+        if(typeof _ulSyncSlotsToModels==="function") _ulSyncSlotsToModels();
+        if(typeof _ulUpdateBtn==="function") _ulUpdateBtn();
+        setPill(_allowedPills().includes(activePill)?activePill:"t2i");
+        if(typeof _applyModelFamilyUI==="function") _applyModelFamilyUI();
+        if(_refreshPromptModeUI) _refreshPromptModeUI();
+        if(_refreshKreaCtrlBar) _refreshKreaCtrlBar();
+        persist();
+        _loadModels();
+      },"");
+      familyF.dd.updateItems(["flux","krea"]); familyF.dd.set(S.modelFamily||"flux");
+      familyRow.append(familyF.wrap);
       // Row 1: Model / Text Encoder / VAE
       const modGrid=mk("div",{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"8px",marginBottom:"4px"});
       const modelF  =mkModDD("Model",         "/models/diffusion_models", S.model,       v=>{S.model=v;if(typeof _kvUpdateNote==="function")_kvUpdateNote();},"klein");
       const teF     =mkModDD("Text Encoder",  "/models/text_encoders",   S.textEncoder, v=>S.textEncoder=v, "qwen");
       const vaeF    =mkModDD("VAE",           "/models/vae",             S.vae,         v=>S.vae=v,         "flux2");
+      const kreaModelF=mkModDD("Krea Model",        "/models/diffusion_models", S.kreaModel,       v=>{S.kreaModel=v;persist();},"krea");
+      const kreaTeF   =mkModDD("Krea Text Encoder", "/models/text_encoders",   S.kreaTextEncoder, v=>{S.kreaTextEncoder=v;persist();},"qwen3,qwen3vl");
+      const kreaVaeF  =mkModDD("Krea VAE",          "/models/vae",             S.kreaVae,         v=>{S.kreaVae=v;persist();},"qwen_image");
       modGrid.append(modelF.wrap,teF.wrap,vaeF.wrap);
+      const kreaModelGrid=mk("div",{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"8px",marginBottom:"8px"});
+      kreaModelGrid.append(kreaModelF.wrap,kreaTeF.wrap,kreaVaeF.wrap);
       // KV info note — shown below Model dropdown when selected model name contains "kv"
       const _isBaseModel=()=>(S.model||"").toLowerCase().includes("base");
 
@@ -973,7 +1067,7 @@ app.registerExtension({
       };
 
       // Row 2: Faceswap LoRA + Remove BG model
-      const modGrid2=mk("div",{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"8px",marginBottom:"16px"});
+      const modGrid2=mk("div",{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px",marginBottom:"16px"});
       const fsLoraF=mkModDD("Faceswap LoRA","/models/loras",S.fsLora,v=>{S.fsLora=v;persist();});
       const bgF=mkModDD("Remove BG Model","models/background_removal","none",v=>{S.bgRemovalModel=v==="none"?"":v;persist();});
       const seedvrF=mkModDD("SeedVR2 Model","models/seedvr2",S.seedvr2Model||"none",v=>{S.seedvr2Model=v==="none"?"":v;persist();},"seedvr2");
@@ -1009,8 +1103,10 @@ app.registerExtension({
       };
       _loadSeedVR2Models();
       _loadUpscaleModels();
-      modGrid2.append(fsLoraF.wrap,bgF.wrap,seedvrF.wrap);
-      modGrid3.append(upscaleF.wrap,mk("div"),mk("div"));
+      // modGrid2 = Flux-only loaders (faceswap LoRA + remove-bg). Hidden in Krea.
+      modGrid2.append(fsLoraF.wrap,bgF.wrap);
+      // modGrid3 = shared post-processing models (SeedVR2 + Upscale). Visible in both families.
+      modGrid3.append(seedvrF.wrap,upscaleF.wrap,mk("div"));
 
       // ── LLM settings ──────────────────────────────────────────────────────
       const llmTitle=mk("div",{fontSize:"10px",fontWeight:"700",letterSpacing:".1em",
@@ -1130,7 +1226,16 @@ app.registerExtension({
       _dsRow.append(_dsTop,_dsHint);
       _dsApplyEnabled();
 
-      settingsOverlay.append(settHdr,modGrid,_kvNote,_baseNote,modGrid2,modGrid3,llmTitle,modGridLLM,prefTitle,soundToggle.el,advUIToggle.el,extLoadersToggle.el,_dsRow);
+      let _applyModelFamilyUI=()=>{
+        const isKrea=S.modelFamily==="krea";
+        modGrid.style.display=isKrea?"none":"grid";
+        kreaModelGrid.style.display=isKrea?"grid":"none";
+        modGrid2.style.display=isKrea?"none":"grid";
+        _kvNote.style.display=!isKrea&&(S.model||"").toLowerCase().includes("kv")?"block":"none";
+        _baseNote.style.display=!isKrea&&(S.model||"").toLowerCase().includes("base")?"block":"none";
+      };
+      settingsOverlay.append(settHdr,familyRow,modGrid,kreaModelGrid,_kvNote,_baseNote,modGrid2,modGrid3,llmTitle,modGridLLM,prefTitle,soundToggle.el,advUIToggle.el,extLoadersToggle.el,_dsRow);
+      _applyModelFamilyUI();
 
       // ── Overlay helpers ───────────────────────────────────────────────────
       const openOverlay=(el)=>{
@@ -1412,6 +1517,7 @@ app.registerExtension({
         root.style.transformOrigin="top left";
         root.style.transform=`scale(${_scale})`;
         const _scW=Math.round(NODE_W*_scale),_scH=Math.round(NODE_H*_scale);
+        if(S.modelFamily==="krea"&&!_allowedPills().includes(activePill)) activePill="t2i";
         const _scWrap=mk("div",{width:_scW+"px",height:_scH+"px",position:"relative",flexShrink:"0",overflow:"hidden"});
         _scWrap.appendChild(root);
         _fsNodeOverlay.appendChild(_scWrap);
@@ -1450,6 +1556,8 @@ app.registerExtension({
 
       // ── PILLS ─────────────────────────────────────────────────────────────
       let activePill=S.pill||"t2i";
+      const _allowedPills=()=>S.modelFamily==="krea"?["t2i","i2i","llm"]:["t2i","i2i","edit","inpaint","faceswap","llm"];
+      if(!_allowedPills().includes(activePill)) activePill="t2i";
 
       const pillT2I     =Pill("T2I",     activePill==="t2i",      ()=>setPill("t2i"));
       const pillI2I     =Pill("I2I",     activePill==="i2i",      ()=>setPill("i2i"));
@@ -1461,21 +1569,21 @@ app.registerExtension({
 
       let _promptTARef=null; // set after promptTA is created
 
-      const _pillPromptKey=(p)=>p==="t2i"?"promptT2i":p==="edit"?"promptEdit":p==="inpaint"?"promptPaint":p==="i2i"?"promptI2i":p==="llm"?"promptLLM":"promptFs";
+      const _pillPromptKey=(p)=>{
+        if(p==="llm") return "promptLLM";
+        if(S.modelFamily==="krea") return p==="i2i"?"promptI2i":"promptT2i";
+        return p==="t2i"?"promptT2i":p==="edit"?"promptEdit":p==="inpaint"?"promptPaint":p==="i2i"?"promptI2i":"promptFs";
+      };
 
       function setPill(p){
-        // Save current prompt to old pill's slot before switching
-        if(_promptTARef&&activePill){
-          S[_pillPromptKey(activePill)]=_promptTARef.value;
-        }
+        const allowed=_allowedPills();
+        if(!allowed.includes(p)) p="t2i";
+        if(_refreshPromptModeUI) _refreshPromptModeUI();
+        if(_promptTARef&&activePill) S[_pillPromptKey(activePill)]=_promptTARef.value;
         activePill=p;S.pill=p;
-        // Restore prompt for new pill
         const newPrompt=S[_pillPromptKey(p)];
-        // Pre-fill faceswap default prompt only if both shared and per-pill are empty
-        if(p==="faceswap"&&!newPrompt&&!S.prompt.trim()){
-          S[_pillPromptKey(p)]=DEFAULT_FACESWAP_PROMPT;
-        }
-        S.prompt=S[_pillPromptKey(p)];
+        if(S.modelFamily==="flux"&&p==="faceswap"&&!newPrompt&&!S.prompt.trim()) S[_pillPromptKey(p)]=DEFAULT_FACESWAP_PROMPT;
+        S.prompt=S[_pillPromptKey(p)]||"";
         if(_promptTARef){ _promptTARef.value=S.prompt; if(typeof _promptOvTA!=="undefined"&&_promptOvTA) _promptOvTA.value=S.prompt; }
         persist();
         [pillT2I,pillI2I,pillEdit,pillInpaint,pillFaceswap,pillLLM].forEach(b=>{
@@ -1486,6 +1594,7 @@ app.registerExtension({
             (b===pillInpaint&&p==="inpaint")||
             (b===pillFaceswap&&p==="faceswap")||
             (b===pillLLM&&p==="llm");
+          b.style.display=(b===pillEdit||b===pillInpaint||b===pillFaceswap)?(S.modelFamily==="flux"?"":"none"):"";
           b.style.background=isActive?LIME:C.bg2;
           b.style.color=isActive?"#111":C.text;
           b.style.borderColor=isActive?LIME:C.border;
@@ -1493,6 +1602,7 @@ app.registerExtension({
         });
         updatePillVisibility();
         updateSizeControls();
+        try{_syncPbNodeRes();}catch(_){}
       }
 
       // ── MAIN ROW ─────────────────────────────────────────────────────────
@@ -1905,6 +2015,7 @@ app.registerExtension({
           if(!hadDims&&_w&&_h&&slotKey==="img1"&&!_useSizeSource){
             _useSizeSource="img1";
             S.useSizeFromImage1=true;
+            try{_syncPbNodeRes();}catch(_){}
           }
           // If aspect ratio lock is active, update ratio from this new image
           if(_w&&_h&&typeof _arLocked!=="undefined"&&_arLocked){
@@ -1918,6 +2029,7 @@ app.registerExtension({
           _useSizeSource=(_useSizeSource===slotKey)?null:slotKey;
           S.useSizeFromImage1=_useSizeSource==="img1";
           persist();updateSizeControls();
+          try{_syncPbNodeRes();}catch(_){}
           dims1Lbl._refresh();dims2Lbl._refresh();
         };
         return el;
@@ -1984,6 +2096,7 @@ app.registerExtension({
         S.useSizeFromImage1=_useSizeSource==="img1";
         dims1Lbl._refresh(); dims2Lbl._refresh();
         updateSizeControls();persist();
+        try{_syncPbNodeRes();}catch(_){}
       };
 
       const sizeFromImg1Note=mk("div",{fontSize:"8px",color:LIME,display:"none",marginTop:"0"});
@@ -5642,6 +5755,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         // Deactivate "use image size" badge when user explicitly picks a size
         if(_useSizeSource){ _useSizeSource=null;S.useSizeFromImage1=false;dims1Lbl._refresh();dims2Lbl._refresh();sizeFromImg1Note.style.display="none"; }
         persist();_arRefreshDimsPreview();
+        try{_syncPbNodeRes();}catch(_){}
       });
       resSect.appendChild(resDD.el);
 
@@ -5667,6 +5781,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         wInp.setVal(S.customW);hInp.setVal(S.customH);
         if(_arLocked&&_arRatio) _arRatio=1/_arRatio;
         persist();_arRefreshDimsPreview();
+        try{_syncPbNodeRes();}catch(_){}
       };
 
       // Aspect ratio lock
@@ -5720,6 +5835,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         }
         _deactivateImgSize();
         persist(); _arRefreshDimsPreview();
+        try{_syncPbNodeRes();}catch(_){}
       },"80px");
       const xLbl=mk("span",{fontSize:"10px",color:C.muted,flexShrink:"0"});tx(xLbl,"×");
       const hInp=NI("h",S.customH,1,8192,1,v=>{
@@ -5730,6 +5846,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         }
         _deactivateImgSize();
         persist(); _arRefreshDimsPreview();
+        try{_syncPbNodeRes();}catch(_){}
       },"80px");
 
       wInp._inp.addEventListener("keydown",e=>{ if(e.key==="Tab"&&!e.shiftKey){ e.preventDefault(); hInp._inp.focus(); hInp._inp.select(); } });
@@ -5776,6 +5893,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         } else {
           sizeFromImg1Note.style.display="none";
         }
+        try{_syncPbNodeRes();}catch(_){}
       }
 
       // ── Seed (hidden standalone — seed control lives in advPanel only) ──────
@@ -6601,7 +6719,6 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
 
       const _UL_DEFAULT=3;   // default number of LoRA slots
       const _UL_MAX=6;       // maximum slots the user can add
-      const _emptyUserLora=()=>({name:"",strength:1.0,disabled:false});
 
       const _mkULRow=(idx)=>{
         const row=mk("div",{display:"flex",flexDirection:"column",gap:"6px",
@@ -8003,7 +8120,133 @@ ${base}`;
         errMinChip.style.display="none";
       }
 
+      // ── Krea Prompt Builder toggle (small pill-style button in prompt header) ──
+      const _kreaPbToggle=mk("button",{
+        background:"none",border:"1px solid rgba(176,102,52,.35)",cursor:"pointer",
+        padding:"2px 8px",color:"#d4956a",outline:"none",
+        display:"none",alignItems:"center",gap:"5px",borderRadius:"5px",
+        fontSize:"9px",fontWeight:"700",letterSpacing:".04em",
+        transition:"all .15s",flexShrink:"0",
+      });
+      const _kreaPbIcon=document.createElementNS("http://www.w3.org/2000/svg","svg");
+      _kreaPbIcon.setAttribute("viewBox","0 0 24 24");_kreaPbIcon.setAttribute("width","10");_kreaPbIcon.setAttribute("height","10");
+      _kreaPbIcon.setAttribute("fill","none");_kreaPbIcon.setAttribute("stroke","currentColor");
+      _kreaPbIcon.setAttribute("stroke-width","2");_kreaPbIcon.setAttribute("stroke-linecap","round");
+      _kreaPbIcon.innerHTML=`<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>`;
+      const _kreaPbTxt=mk("span");tx(_kreaPbTxt,"Prompt Builder");
+      _kreaPbToggle.append(_kreaPbIcon,_kreaPbTxt);
+      const _kreaPbUpdateToggle=(active)=>{
+        _kreaPbToggle.style.background=active?"rgba(176,102,52,.2)":"none";
+        _kreaPbToggle.style.borderColor=active?"#d4956a":"rgba(176,102,52,.35)";
+        _kreaPbToggle.style.color=active?"#e8b88a":"#d4956a";
+        tx(_kreaPbTxt,active?"Prompt Builder ON":"Prompt Builder");
+      };
+      _kreaPbToggle.onmouseenter=()=>{if(!S.kreaPromptMode||S.kreaPromptMode!=="builder"){_kreaPbToggle.style.borderColor="#d4956a";_kreaPbToggle.style.background="rgba(176,102,52,.1)";}};
+      _kreaPbToggle.onmouseleave=()=>{_kreaPbUpdateToggle(S.kreaPromptMode==="builder");};
+      _kreaPbToggle.onclick=()=>{S.kreaPromptMode=S.kreaPromptMode==="builder"?"plain":"builder";_kreaPbUpdateToggle(S.kreaPromptMode==="builder");persist();if(_refreshPromptModeUI)_refreshPromptModeUI();};
+      _kreaPbUpdateToggle(S.kreaPromptMode==="builder");
+      promptHdr.appendChild(_kreaPbToggle);
+
+      let _kreaPbNodeId=null;
+      const _syncPbNodeRes=()=>{
+        if(!_kreaPbNodeId) return;
+        try{
+          const pbNode=app.graph.getNodeById(_kreaPbNodeId);
+          if(!pbNode) return;
+          const ww=pbNode.widgets||[];
+          const wWidget=ww.find(w=>w.name==="width");
+          const hWidget=ww.find(w=>w.name==="height");
+          if(wWidget) wWidget.value=getW()||1024;
+          if(hWidget) hWidget.value=getH()||1024;
+        }catch(_){}
+      };
+      _refreshPromptModeUI=()=>{
+        const isKreaT2I=S.modelFamily==="krea"&&activePill==="t2i";
+        const showBuilder=isKreaT2I&&S.kreaPromptMode==="builder";
+        _kreaPbToggle.style.display=isKreaT2I?"":"none";
+        _kreaPbUpdateToggle(showBuilder);
+        if(_refreshKreaCtrlBar) _refreshKreaCtrlBar();
+        // Add/remove real Ideogram4PromptBuilderKJ node on canvas
+        try{
+          if(showBuilder&&!_kreaPbNodeId){
+            const nodeType="Ideogram4PromptBuilderKJ";
+            const pbNode=LiteGraph.createNode(nodeType);
+            if(!pbNode){console.warn("[FluxKlein] Prompt Builder KJ node type not found.");return;}
+            const ourNode=app.graph.getNodeById(self.id);
+            pbNode.pos=[(ourNode?.pos?.[0]||0)-1100, (ourNode?.pos?.[1]||0)-100];
+            app.graph.add(pbNode);
+            try{
+              const _applyIdeoEditorHeight=(tries=24)=>{
+                pbNode.size=Array.isArray(pbNode.size)&&pbNode.size.length>=2?[Math.round(pbNode.size[0]),Math.round(pbNode.size[1])]:[560,420];
+                pbNode.properties=pbNode.properties||{};
+                pbNode.properties.dockPinned=true;
+                pbNode.properties.dockMin=false;
+                pbNode.properties.dockGraph=pbNode.properties.dockGraph||{x:0,y:(pbNode.size?.[1]||420)+2,w:Math.round(pbNode.size?.[0]||560),h:470};
+                pbNode.properties.dockGraph.h=940;
+                if(pbNode._dockEl){
+                  pbNode._dockEl.style.height="940px";
+                  pbNode.setDirtyCanvas?.(true,true);
+                  pbNode.graph?.setDirtyCanvas?.(true,true);
+                  return;
+                }
+                if(tries>0) requestAnimationFrame(()=>_applyIdeoEditorHeight(tries-1));
+              };
+              requestAnimationFrame(()=>_applyIdeoEditorHeight());
+            }catch(_){}
+            _kreaPbNodeId=pbNode.id;
+            // Restore saved builder state, fallback width/height to current node resolution
+            const b=S.kreaBuilder||{};
+            const ww=pbNode.widgets||[],setW=(n,v)=>{const w=ww.find(x=>x.name===n);if(w&&v)w.value=v;};
+            setW("width",+(b.width)||getW()||1024);
+            setW("height",+(b.height)||getH()||1024);
+            setW("high_level_description",b.highLevelDescription);
+            setW("background",b.background);
+            setW("style",b.style||"photo");
+            setW("style.photo",b.stylePhoto);
+            setW("aesthetics",b.aesthetics);
+            setW("lighting",b.lighting);
+            setW("medium",b.medium);
+            setW("import_mode",b.importMode||"when empty");
+          } else if(!showBuilder&&_kreaPbNodeId){
+            const toRemove=app.graph.getNodeById(_kreaPbNodeId);
+            if(toRemove) app.graph.remove(toRemove);
+            // Save widget state before removing
+            if(toRemove){
+              const ww=toRemove.widgets||[];
+              const get=(n)=>{const w=ww.find(x=>x.name===n);return w?w.value:"";};
+              S.kreaBuilder.width=+(get("width"))||1008;
+              S.kreaBuilder.height=+(get("height"))||1600;
+              S.kreaBuilder.highLevelDescription=get("high_level_description");
+              S.kreaBuilder.background=get("background");
+              S.kreaBuilder.style=get("style")||"photo";
+              S.kreaBuilder.stylePhoto=get("style.photo");
+              S.kreaBuilder.aesthetics=get("aesthetics");
+              S.kreaBuilder.lighting=get("lighting");
+              S.kreaBuilder.medium=get("medium");
+              S.kreaBuilder.importMode=get("import_mode")||"when empty";
+              persist();
+            }
+            _kreaPbNodeId=null;
+          }
+        }catch(e){console.warn("[FluxKlein] PB node:",e);}
+      };
       promptWrap.append(promptTA,errPanel);
+      _refreshPromptModeUI();
+      // ── Krea control bar (below prompt wrap, visible for Krea T2I/I2I) ─────
+      const _kreaCtrlBar=mk("div",{display:"none",flexDirection:"column",gap:"6px",marginTop:"4px"});
+      const _kreaCtrlBarRow=mk("div",{display:"flex",alignItems:"center",gap:"8px"});
+      const _kreaCtrlRebLbl=mk("span",{fontSize:"10px",color:C.muted,fontWeight:"700",letterSpacing:".05em",flexShrink:"0"});
+      tx(_kreaCtrlRebLbl,"Rebalance:");
+      const _kreaCtrlRebInp=NI("",S.kreaRebalanceMultiplier,0,10,0.1,v=>{S.kreaRebalanceMultiplier=v;persist();},"64px");
+      _kreaCtrlRebInp._inp.style.color=LIME;_kreaCtrlRebInp._inp.style.fontWeight="700";
+      const _kreaCtrlBypassToggle=Toggle("Bypass rebalance",S.kreaRebalanceBypass||false,v=>{S.kreaRebalanceBypass=v;persist();});
+      _kreaCtrlBarRow.append(_kreaCtrlRebLbl,_kreaCtrlRebInp,_kreaCtrlBypassToggle.el);
+      _kreaCtrlBar.appendChild(_kreaCtrlBarRow);
+      _refreshKreaCtrlBar=()=>{
+        _kreaCtrlBar.style.display=(S.modelFamily==="krea"&&(activePill==="t2i"||activePill==="i2i"))?"flex":"none";
+      };
+      _refreshKreaCtrlBar();
+      promptWrap.appendChild(_kreaCtrlBar);
 
       // ── Prompt expand overlay ─────────────────────────────────────────────
       const _promptOverlay=mk("div",{
@@ -8143,7 +8386,8 @@ ${base}`;
       const _slotErr=(slot,lbl)=>{ slot.el.style.borderColor="#e05555"; tx(lbl,"Required!"); lbl.style.color="#e05555"; };
 
       genBtn.onclick=async()=>{
-        if(!S.prompt.trim()&&activePill!=="faceswap"&&activePill!=="llm"){showError("Please enter a prompt.");return;}
+        const _kreaBuilderActive=S.modelFamily==="krea"&&activePill==="t2i"&&S.kreaPromptMode==="builder";
+        if(!S.prompt.trim()&&!_kreaBuilderActive&&activePill!=="faceswap"&&activePill!=="llm"){showError("Please enter a prompt.");return;}
         if(activePill==="llm"){
           if(!llmSlot.hasFile()){_slotErr(llmSlot, llmSlotLbl);return;}
           if(!S.llmModel||S.llmModel==="none"){showError("LLM: select a model in Settings.");return;}
@@ -8166,7 +8410,8 @@ ${base}`;
           if(!S.fsLora||S.fsLora==="none") {showError("FACESWAP: select a Faceswap LoRA in Settings.");return;}
         }
         const _hasExtModel=(()=>{ const n=app.graph.getNodeById(self.id); const inputs=n?.inputs||[]; const slot=inputs.find(i=>i.name==="model"); return slot?.link!=null; })();
-        if(!S.model&&!_hasExtModel&&activePill!=="llm"){showError("No model selected. Open Settings and choose a model.");return;}
+        const _activeModel=S.modelFamily==="krea"?S.kreaModel:S.model;
+        if(!_activeModel&&!_hasExtModel&&activePill!=="llm"){showError("No model selected. Open Settings and choose a model.");return;}
 
         clearError();S.generating=true;
 
@@ -8231,8 +8476,14 @@ ${base}`;
         const isOutpaintMode=activePill==="inpaint"&&_paintMode==="inpaint"&&_maskName==="__outpaint__";
         const isFaceswapMode=activePill==="faceswap";
         const isI2IMode=activePill==="i2i";
+        const isKrea=S.modelFamily==="krea";
         let wfUrl;
-        if(activePill==="edit"||isSketchMode) wfUrl="/flux_klein/workflow_edit";
+        if(isKrea){
+          if(activePill==="llm") wfUrl="/flux_klein/workflow_llm";
+          else if(isI2IMode) wfUrl="/flux_klein/workflow_krea_i2i";
+          else wfUrl="/flux_klein/workflow_krea_t2i";
+        }
+        else if(activePill==="edit"||isSketchMode) wfUrl="/flux_klein/workflow_edit";
         else if(isInpaintMode) wfUrl="/flux_klein/workflow_inpaint";
         else if(isOutpaintMode) wfUrl="/flux_klein/workflow_outpaint";
         else if(isFaceswapMode) wfUrl="/flux_klein/workflow_faceswap";
@@ -8306,8 +8557,10 @@ ${base}`;
 
         const _isBase=_isBaseModel();
         const _setAdv=(samplerNodeId,skipDenoise)=>{
-          const steps=S.advancedUI?(S.steps||4):(_isBase?20:4);
-          const cfg=S.advancedUI?(S.cfg!==undefined?S.cfg:1):(_isBase?5:1);
+          const defSteps=isKrea?8:(_isBase?20:4);
+          const defCfg=isKrea?1:(_isBase?5:1);
+          const steps=S.advancedUI?(S.steps||defSteps):defSteps;
+          const cfg=S.advancedUI?(S.cfg!==undefined?S.cfg:defCfg):defCfg;
           set(samplerNodeId,"steps",steps);
           set(samplerNodeId,"cfg",cfg);
           if(S.advancedUI){
@@ -8375,8 +8628,115 @@ ${base}`;
           return prev;
         };
 
+        // ── KREA workflow patching (T2I / I2I) ──────────────────────────────
+        if(isKrea){
+          const KMODEL=S.kreaModel||"krea2TurboFP8_krea2TURBO.safetensors";
+          const KTE=S.kreaTextEncoder||"qwen3vl_4b_bf16.safetensors";
+          const KVAE=S.kreaVae||"qwen_image_vae.safetensors";
+          const W=isI2IMode?WFKI2I:WFK;
+          if(extModel) delete prompt[W.model]; else set(W.model,"unet_name",KMODEL);
+          if(extClip){ delete prompt[W.textEnc]; prompt[W.promptPos].inputs.clip=extClip; prompt[W.promptNeg].inputs.clip=extClip; }
+          else set(W.textEnc,"clip_name",KTE);
+          if(extVae){ delete prompt[W.vae]; prompt[W.decode].inputs.vae=extVae; if(isI2IMode&&prompt[W.vaeEnc]) prompt[W.vaeEnc].inputs.vae=extVae; }
+          else set(W.vae,"vae_name",KVAE);
+          set(W.promptNeg,"text",DEFAULT_NEG_PROMPT);
+          set(W.save,"filename_prefix","one-node-flux-2-klein/krea");
+
+          // Rebalance multiplier / bypass
+          set(W.rebalance,"multiplier",+(S.kreaRebalanceMultiplier)||0);
+          if(S.kreaRebalanceBypass){
+            // Bypass: feed positive conditioning straight into the sampler, drop rebalance node
+            prompt[W.sampler].inputs.positive=[W.promptPos,0];
+            delete prompt[W.rebalance];
+          }
+
+          // Model chain → LoRAs → sampler
+          const kreaModelSrc=extModel||W.model;
+          const kreaFinalRef=_applyLoRAs(kreaModelSrc,isI2IMode?"KREAI2I:":"KREA:");
+          set(W.sampler,"model",typeof kreaFinalRef==="string"?[kreaFinalRef,0]:kreaFinalRef);
+
+          // Prompt — Prompt Builder KJ (T2I only) or raw text
+          if(!isI2IMode&&S.kreaPromptMode==="builder"&&_kreaPbNodeId){
+            // Serialize the real graph node and wire its prompt output
+            const pbNode=app.graph.getNodeById(_kreaPbNodeId);
+            if(pbNode){
+              try{_syncPbNodeRes();}catch(_){}
+              const ww=pbNode.widgets||[];
+              const get=(n)=>{const w=ww.find(x=>x.name===n);return w?w.value:"";};
+              S.kreaBuilder.width=+(get("width"))||getW()||1008;
+              S.kreaBuilder.height=+(get("height"))||getH()||1600;
+              S.kreaBuilder.highLevelDescription=get("high_level_description");
+              S.kreaBuilder.background=get("background");
+              S.kreaBuilder.style=get("style")||"photo";
+              S.kreaBuilder.stylePhoto=get("style.photo");
+              S.kreaBuilder.aesthetics=get("aesthetics");
+              S.kreaBuilder.lighting=get("lighting");
+              S.kreaBuilder.medium=get("medium");
+              S.kreaBuilder.importMode=get("import_mode")||"when empty";
+              persist();
+              const serialized={class_type:pbNode.comfyClass||pbNode.type,inputs:{},_meta:{title:"Prompt Builder KJ"}};
+              (ww||[]).forEach(w=>{if(w.name)serialized.inputs[w.name]=w.value;});
+              prompt["FK:PB"]=serialized;
+              prompt[W.promptPos].inputs.text=["FK:PB",0];
+            } else {
+              delete prompt[W.builder];
+              set(W.promptPos,"text",_effectivePrompt);
+            }
+          } else if(!isI2IMode&&S.kreaPromptMode==="builder"){
+            // Fallback: no graph node — use static builder
+            const b=S.kreaBuilder||{};
+            set(W.builder,"width",getW()||+(b.width)||1024);
+            set(W.builder,"height",getH()||+(b.height)||1024);
+            set(W.builder,"high_level_description",b.highLevelDescription||"");
+            set(W.builder,"background",b.background||"");
+            set(W.builder,"style",b.style||"photo");
+            set(W.builder,"style.photo",b.stylePhoto||"");
+            set(W.builder,"aesthetics",b.aesthetics||"");
+            set(W.builder,"lighting",b.lighting||"");
+            set(W.builder,"medium",b.medium||"");
+            set(W.builder,"import_mode",b.importMode||"when empty");
+            prompt[W.promptPos].inputs.text=["KREA:BUILDER",0];
+          } else {
+            if(prompt[W.builder]) delete prompt[W.builder];
+            set(W.promptPos,"text",_effectivePrompt);
+          }
+
+          // Latent size (T2I) / input image (I2I)
+          if(isI2IMode){
+            set(W.loadImage,"image",S.i2iImage||"placeholder.png");
+            if(S.i2iResizeLonger>0){
+              const dims=_i2iDims._getDims();
+              if(dims.w&&dims.h){
+                const scale=S.i2iResizeLonger/Math.max(dims.w,dims.h);
+                const newW=Math.round(dims.w*scale/16)*16;
+                const newH=Math.round(dims.h*scale/16)*16;
+                prompt["KREAI2I:scale"]={class_type:"ImageScale",inputs:{image:[W.loadImage,0],upscale_method:"lanczos",width:newW,height:newH,crop:"center"},_meta:{title:"Scale Krea I2I Input"}};
+                prompt[W.vaeEnc].inputs.pixels=["KREAI2I:scale",0];
+              }
+            }
+          } else {
+            let kw=getW(), kh=getH();
+            if(S.kreaPromptMode==="builder"&&_kreaPbNodeId){
+              const pbNode=app.graph.getNodeById(_kreaPbNodeId);
+              if(pbNode){
+                const ww=pbNode.widgets||[];
+                const get=(n)=>{const w=ww.find(x=>x.name===n);return w?w.value:"";};
+                kw=+(get("width"))||kw;
+                kh=+(get("height"))||kh;
+              }
+            }
+            set(W.latent,"width",kw||1024);
+            set(W.latent,"height",kh||1024);
+          }
+
+          const seed=S.randomizeSeed?Math.floor(Math.random()*999999999999):S.seed;
+          if(S.randomizeSeed){S.seed=seed;seedInp.setVal(seed);_advSeedInp.setVal(seed);_advSeedRefresh();persist();}
+          set(W.sampler,"seed",seed);
+          if(isI2IMode){ _setAdv(W.sampler,true); set(W.sampler,"denoise",S.i2iDenoise!==undefined?S.i2iDenoise:0.75); }
+          else _setAdv(W.sampler);
+
         // ── INPAINT workflow patching ───────────────────────────────────────
-        if(isInpaintMode){
+        } else if(isInpaintMode){
           const WFI={
             model:"FKI:194", kv:"FKI:216", textEnc:"FKI:195", vae:"FKI:196",
             promptPos:"FKI:6", promptNeg:"FKI:190",
@@ -8747,15 +9107,17 @@ ${base}`;
 
       // ── PILL VISIBILITY ───────────────────────────────────────────────────
       function updatePillVisibility(){
+        const isKrea=S.modelFamily==="krea";
+        if(_refreshPromptModeUI) _refreshPromptModeUI();
         i2iPanel.style.display=activePill==="i2i"?"flex":"none";
-        editPanel.style.display=activePill==="edit"?"flex":"none";
-        inpaintPanel.style.display=activePill==="inpaint"?"flex":"none";
-        faceswapPanel.style.display=activePill==="faceswap"?"flex":"none";
+        editPanel.style.display=!isKrea&&activePill==="edit"?"flex":"none";
+        inpaintPanel.style.display=!isKrea&&activePill==="inpaint"?"flex":"none";
+        faceswapPanel.style.display=!isKrea&&activePill==="faceswap"?"flex":"none";
         llmPanel.style.display=activePill==="llm"?"flex":"none";
         llmCopyToClip.style.display=activePill==="llm"?"":"none";
-        _promptEnhanceBtn.style.display=(activePill==="t2i"||activePill==="i2i"||activePill==="inpaint"||activePill==="edit")?"flex":"none";
+        _promptEnhanceBtn.style.display=(activePill==="t2i"||activePill==="i2i"||(!isKrea&&(activePill==="inpaint"||activePill==="edit")))?"flex":"none";
         postActionRow.style.display=(activePill==="llm"||!_lastGenObj)?"none":"flex";
-        resSect.style.display=(activePill==="inpaint"||activePill==="faceswap"||activePill==="i2i"||activePill==="llm")?"none":"flex";
+        resSect.style.display=((!isKrea&&(activePill==="inpaint"||activePill==="faceswap"))||activePill==="i2i"||activePill==="llm")?"none":"flex";
         updateSizeControls();
       }
 
@@ -9430,18 +9792,13 @@ ${base}`;
             S.randomizeSeed=false; S.seed=meta.seed;
             seedInp.setVal(meta.seed); _advSeedInp.setVal(meta.seed); _advSeedRefresh();
           }
-          // LoRAs — grow slots if the saved generation used more than we currently show
+          // LoRAs — restore into current family bucket only
           const _metaLoraCount=Array.isArray(meta.userLoras)?meta.userLoras.length:0;
           const _wantSlots=Math.min(_UL_MAX,Math.max(_UL_DEFAULT,_metaLoraCount));
-          if(S.userLoras.length!==_wantSlots){
-            if(S.userLoras.length<_wantSlots){
-              while(S.userLoras.length<_wantSlots) S.userLoras.push(_emptyUserLora());
-            } else {
-              S.userLoras.length=_wantSlots;
-            }
-            _ulRebuildRows();
-          }
-          // Always reset all slots first (incl. trigger rows), then apply what meta has
+          while(S.userLoras.length<_wantSlots) S.userLoras.push(_emptyUserLora());
+          if(S.userLoras.length>_wantSlots) S.userLoras.length=_wantSlots;
+          S.userLoras=S.userLoras.map(_normUserLora);
+          _ulRebuildRows();
           _ulRowEls.forEach((r,i)=>{
             S.userLoras[i]=_emptyUserLora();
             S.userLoras[i].strength=0;
@@ -9462,6 +9819,7 @@ ${base}`;
               }
             });
           }
+          _stashCurrentUserLoras();
           _ulUpdateBtn();
           updateSizeControls(); persist();
         }catch(err){
@@ -10075,13 +10433,13 @@ ${base}`;
         }
         // Pick target slot based on active pill and slot state
         let targetSlot=null;
-        if(activePill==="edit"){
+        if(activePill==="edit"&&S.modelFamily==="flux"){
           targetSlot=!img1Slot.hasFile()?img1Slot:img2Slot;
         } else if(activePill==="i2i"){
           targetSlot=i2iSlot;
-        } else if(activePill==="inpaint"){
+        } else if(activePill==="inpaint"&&S.modelFamily==="flux"){
           targetSlot=_paintSlot;
-        } else if(activePill==="faceswap"){
+        } else if(activePill==="faceswap"&&S.modelFamily==="flux"){
           targetSlot=!_fsTargetSlot.hasFile()?_fsTargetSlot:_fsSourceSlot;
         }
         if(targetSlot) targetSlot.loadFile(file);
@@ -10115,46 +10473,64 @@ ${base}`;
             return list[0]||saved;
           };
           const modelList=(d.diffusion_models||[]).filter(f=>f!=="none");
-          if(modelList.length){const v=pick(modelList,S.model,"klein");S.model=v;modelF.dd.updateItems(modelList);modelF.dd.set(v);}
-          else{S.model="";modelF.dd.updateItems(["none"]);modelF.dd.set("none");}
+          if(modelList.length){
+            const v=pick(modelList,S.model,"klein");S.model=v;modelF.dd.updateItems(modelList);modelF.dd.set(v);
+            const kv=pick(modelList,S.kreaModel,"krea");S.kreaModel=kv;kreaModelF.dd.updateItems(modelList);kreaModelF.dd.set(kv);
+          } else {
+            S.model="";modelF.dd.updateItems(["none"]);modelF.dd.set("none");
+            S.kreaModel="";kreaModelF.dd.updateItems(["none"]);kreaModelF.dd.set("none");
+          }
           const teList=(d.text_encoders||[]).filter(f=>f!=="none");
-          if(teList.length){const v=pick(teList,S.textEncoder,"qwen");S.textEncoder=v;teF.dd.updateItems(teList);teF.dd.set(v);}
-          else{S.textEncoder="";teF.dd.updateItems(["none"]);teF.dd.set("none");}
+          if(teList.length){
+            const v=pick(teList,S.textEncoder,"qwen");S.textEncoder=v;teF.dd.updateItems(teList);teF.dd.set(v);
+            const kv=pick(teList,S.kreaTextEncoder,"qwen3,qwen3vl");S.kreaTextEncoder=kv;kreaTeF.dd.updateItems(teList);kreaTeF.dd.set(kv);
+          } else {
+            S.textEncoder="";teF.dd.updateItems(["none"]);teF.dd.set("none");
+            S.kreaTextEncoder="";kreaTeF.dd.updateItems(["none"]);kreaTeF.dd.set("none");
+          }
           const vaeList=(d.vaes||[]).filter(f=>f!=="none");
-          if(vaeList.length){const v=pick(vaeList,S.vae,"flux2");S.vae=v;vaeF.dd.updateItems(vaeList);vaeF.dd.set(v);}
-          else{S.vae="";vaeF.dd.updateItems(["none"]);vaeF.dd.set("none");}
+          if(vaeList.length){
+            const v=pick(vaeList,S.vae,"flux2");S.vae=v;vaeF.dd.updateItems(vaeList);vaeF.dd.set(v);
+            const kv=pick(vaeList,S.kreaVae,"qwen_image");S.kreaVae=kv;kreaVaeF.dd.updateItems(vaeList);kreaVaeF.dd.set(kv);
+          } else {
+            S.vae="";vaeF.dd.updateItems(["none"]);vaeF.dd.set("none");
+            S.kreaVae="";kreaVaeF.dd.updateItems(["none"]);kreaVaeF.dd.set("none");
+          }
           persist();
+          // Ensure LoRA state is normalized (old state might lack disabled field)
+          S.userLoras=S.userLoras.map(_normUserLora);
           // Populate LoRA dropdowns
           const loraList=(d.loras||[]).filter(f=>f!=="none");
           _loraList=loraList;
           const loraOpts=["none",...loraList];
-          _ulRowEls.forEach((r)=>{
+          _ulRowEls.forEach((r,i)=>{
             r._dd.updateItems(loraOpts);
-            const saved=r._lora.name;
+            const saved=S.userLoras[i]?.name;
             if(saved&&saved!=="none"&&loraList.length){
-              const nd=(s)=>s.replace(/\\/g,"/").toLowerCase();
+              const nd=(s)=>(s||"").replace(/\\/g,"/").toLowerCase();
               const match=loraOpts.find(o=>nd(o)===nd(saved))||
                 loraOpts.find(o=>nd(o).split("/").pop()===nd(saved).split("/").pop());
-              if(match){r._dd.set(match);r._lora.name=match;}
-              else{r._dd.set("none");r._lora.name="";}
-            } else{r._dd.set("none");r._lora.name="";}
+              if(match){r._dd.set(match);S.userLoras[i].name=match;}
+              else{r._dd.set("none");S.userLoras[i].name="";}
+            } else r._dd.set("none");
           });
           _ulUpdateBtn();
           // Faceswap LoRA dropdown
           fsLoraF.dd.updateItems(loraOpts);
-          if(loraList.length){
+          if(S.modelFamily==="flux"&&loraList.length){
             const nd=(s)=>(s||"").replace(/\\/g,"/").toLowerCase();
             const fsMatch=loraOpts.find(o=>nd(o)===nd(S.fsLora||""))||
               loraOpts.find(o=>nd(o).split("/").pop()===nd(S.fsLora||"").split("/").pop());
             if(fsMatch&&fsMatch!=="none"){fsLoraF.dd.set(fsMatch);S.fsLora=fsMatch;}
             else{fsLoraF.dd.set("none");S.fsLora="";}
-          } else{fsLoraF.dd.set("none");S.fsLora="";}
+          } else { fsLoraF.dd.set("none"); if(S.modelFamily!=="flux") S.fsLora=""; }
           persist();
         })
         .catch(e=>console.warn("[FluxKlein] models:",e));
       _loadModels();
       _loadLLMModels();
       if(S.extLoaders) _applyExtLoaders(true);
+      setPill(activePill);
 
       // Auto-refresh Settings dropdowns when connections change
       self.onConnectionsChange=function(){ _refreshExtInputUI(); };

@@ -479,6 +479,8 @@ def _serve_json(filename):
 
 PromptServer.instance.routes.get("/flux_klein/workflow_t2i")(_serve_json("workflows/t2i_workflow.json"))
 PromptServer.instance.routes.get("/flux_klein/workflow_i2i")(_serve_json("workflows/i2i_workflow.json"))
+PromptServer.instance.routes.get("/flux_klein/workflow_krea_t2i")(_serve_json("workflows/krea_t2i_workflow.json"))
+PromptServer.instance.routes.get("/flux_klein/workflow_krea_i2i")(_serve_json("workflows/krea_i2i_workflow.json"))
 PromptServer.instance.routes.get("/flux_klein/workflow_edit")(_serve_json("workflows/edit_workflow.json"))
 PromptServer.instance.routes.get("/flux_klein/workflow_inpaint")(_serve_json("workflows/inpaint_workflow.json"))
 PromptServer.instance.routes.get("/flux_klein/workflow_outpaint")(_serve_json("workflows/outpaint_workflow.json"))

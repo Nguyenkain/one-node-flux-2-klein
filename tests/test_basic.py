@@ -38,7 +38,10 @@ def test_workflows_exist(node_dir):
     workflows_dir = node_dir / "workflows"
     assert workflows_dir.is_dir(), "workflows/ directory missing"
 
-    expected_modes = ["t2i", "i2i", "edit", "inpaint", "outpaint", "faceswap", "remove_bg"]
+    expected_modes = [
+        "t2i", "i2i", "edit", "inpaint", "outpaint", "faceswap", "remove_bg",
+        "krea_t2i", "krea_i2i",
+    ]
     for mode in expected_modes:
         wf_path = workflows_dir / f"{mode}_workflow.json"
         assert wf_path.exists(), f"Missing workflow: {wf_path.name}"
