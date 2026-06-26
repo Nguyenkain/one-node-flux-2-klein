@@ -679,6 +679,12 @@ app.registerExtension({
           // Default ON at 1 MP = the existing behaviour, so existing users see no change.
           downscaleRef:   saved.downscaleRef!==undefined?saved.downscaleRef:true,
           downscaleRefMP: saved.downscaleRefMP!==undefined?saved.downscaleRefMP:1.0,
+          // UI layout: "classic" = wide prompt under the preview (default),
+          // "tall" = prompt in the left column so the preview gets full height.
+          layoutMode:   saved.layoutMode||"classic",
+          // Outpaint seam feather (px the mask fades into the original). 0 = auto
+          // (the previous min(48, edge/6) heuristic), so existing users see no change.
+          opFeather:    saved.opFeather!==undefined?saved.opFeather:0,
           previewUrl:   null,
         };
       }
@@ -729,6 +735,7 @@ app.registerExtension({
           i2iImage:S.i2iImage, i2iDenoise:S.i2iDenoise, i2iResizeLonger:S.i2iResizeLonger,
           userLorasByFamily:S.userLorasByFamily, userLoras:S.userLoras, soundEnabled, extLoaders:S.extLoaders,
           downscaleRef:S.downscaleRef, downscaleRefMP:S.downscaleRefMP,
+          layoutMode:S.layoutMode, opFeather:S.opFeather,
         });
       };
 
@@ -1153,25 +1160,33 @@ app.registerExtension({
         const node=app.graph.getNodeById(self.id)||self;
         if(!node) return;
         if(enabled){
-          const existing=(node.inputs||[]).filter(i=>_extInputNames.includes(i.name));
-          if(existing.length===0){
-            _extInputNames.forEach((name,i)=>{
+          // Add any missing ext slots individually — some may already exist if a
+          // connected one (e.g. GGUF) was kept after a previous toggle-off.
+          _extInputNames.forEach((name,i)=>{
+            const has=(node.inputs||[]).some(inp=>inp.name===name);
+            if(!has){
               const type=i===0?"MODEL":i===1?"CLIP":"VAE";
               node.addInput(name,type);
               const slot=node.inputs[node.inputs.length-1];
               if(slot) slot.color_on=_extInputColors[i];
-            });
-          }
-          const n=(node.inputs||[]).length;
+            }
+          });
+          const n=(node.inputs||[]).filter(i=>_extInputNames.includes(i.name)).length;
           node.size=[NODE_W, NODE_H+n*_slotH];
           node.setDirtyCanvas(true,true);
         } else {
+          // Turning the toggle off removes the empty slots, but KEEPS any slot that
+          // still has a wire connected (e.g. a GGUF loader). That way you can flip the
+          // toggle off to expose the fp8 dropdowns without losing your GGUF hookup —
+          // switching fp8 <-> GGUF is then just connecting/disconnecting the wire.
           if(node.inputs&&node.inputs.length>0){
             for(let i=node.inputs.length-1;i>=0;i--){
-              if(_extInputNames.includes(node.inputs[i].name)) node.removeInput(i);
+              const inp=node.inputs[i];
+              if(_extInputNames.includes(inp.name)&&inp.link==null) node.removeInput(i);
             }
           }
-          node.size=[NODE_W, NODE_H];
+          const remaining=(node.inputs||[]).filter(i=>_extInputNames.includes(i.name)).length;
+          node.size=[NODE_W, NODE_H+remaining*_slotH];
           node.setDirtyCanvas(true,true);
         }
       };
@@ -1457,8 +1472,11 @@ app.registerExtension({
       settingsBtn.onmouseleave=()=>{settingsBtn.style.borderColor=C.borderH;settingsBtn.style.color=C.muted;settGear.style.transform="";};
       const _refreshExtInputUI=()=>{
         const n=app.graph.getNodeById(self.id);
-        const isConn=(name)=>{
-          if(!n||!n.inputs) return false;
+        // Only dim a dropdown when external inputs are ENABLED and that slot is wired.
+        // With the toggle off, the dropdowns are always live (their model is used),
+        // even if a GGUF wire is still physically connected.
+        const isActive=(name)=>{
+          if(!S.extLoaders||!n||!n.inputs) return false;
           const slot=n.inputs.find(i=>i.name===name);
           return slot&&slot.link!=null;
         };
@@ -1467,12 +1485,36 @@ app.registerExtension({
           wrap.style.pointerEvents=connected?"none":"";
           wrap.title=connected?"Connected externally — disconnect to use dropdown":"";
         };
-        dim(modelF.wrap,isConn("model"));
-        dim(teF.wrap,  isConn("clip"));
-        dim(vaeF.wrap, isConn("vae"));
+        dim(modelF.wrap,isActive("model"));
+        dim(teF.wrap,  isActive("clip"));
+        dim(vaeF.wrap, isActive("vae"));
       };
       settingsBtn.onclick=e=>{e.stopPropagation();_refreshExtInputUI();openOverlay(settingsOverlay);};
       settClose.onclick=()=>closeOverlayFade(settingsOverlay);
+
+      // ── Layout toggle (classic wide-prompt ↔ tall preview) ────────────────
+      const layoutBtn=mk("button",{
+        background:"transparent",border:`1.5px solid ${C.borderH}`,
+        borderRadius:"6px",padding:"4px 8px",
+        cursor:"pointer",color:C.muted,
+        display:"flex",alignItems:"center",gap:"4px",
+        transition:"opacity .15s, border-color .15s, color .15s",outline:"none",
+      });
+      const _setLayoutBtnIcon=()=>{
+        // Icon hints the layout you'll switch TO; lime when "tall" is active.
+        const tall=S.layoutMode==="tall";
+        layoutBtn.title=tall?"Layout: tall preview (click for classic wide prompt)":"Layout: classic (click for tall preview)";
+        layoutBtn.innerHTML=`<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>`;
+        layoutBtn.style.color=tall?LIME:C.muted;
+        layoutBtn.style.borderColor=tall?LIME:C.borderH;
+      };
+      _setLayoutBtnIcon();
+      layoutBtn.onmouseenter=()=>{layoutBtn.style.borderColor=LIME;layoutBtn.style.color=LIME;};
+      layoutBtn.onmouseleave=()=>{_setLayoutBtnIcon();};
+      layoutBtn.onclick=()=>{
+        S.layoutMode=S.layoutMode==="tall"?"classic":"tall";
+        _applyLayout(S.layoutMode);_setLayoutBtnIcon();persist();
+      };
 
       // Fullscreen node button
       const fsNodeBtn=mk("button",{
@@ -1551,7 +1593,7 @@ app.registerExtension({
 
       const topBarLeft=mk("div",{display:"flex",gap:"3px",alignItems:"center",flexWrap:"nowrap"});
       const topBarRight=mk("div",{display:"flex",gap:"6px",alignItems:"center",flexShrink:"0"});
-      topBarRight.append(galleryBtn,tipsBtn,settingsBtn,fsNodeBtn);
+      topBarRight.append(galleryBtn,tipsBtn,settingsBtn,layoutBtn,fsNodeBtn);
       topBar.append(topBarLeft,topBarRight);
 
       // ── PILLS ─────────────────────────────────────────────────────────────
@@ -1608,7 +1650,21 @@ app.registerExtension({
       // ── MAIN ROW ─────────────────────────────────────────────────────────
       const mainRow=mk("div",{display:"flex",gap:"12px",alignItems:"stretch",flex:"1",minHeight:"0"});
       const leftPanel=mk("div",{display:"flex",flexDirection:"column",gap:"7px",
-        width:"300px",flexShrink:"0"});
+        width:"300px",flexShrink:"0",minHeight:"0",overflowY:"auto",overflowX:"hidden"});
+
+      // Switch prompt placement between the two layouts. promptWrap is defined
+      // further down but captured by closure; this only runs at assemble time / on toggle.
+      const _applyLayout=(mode)=>{
+        if(mode==="tall"){
+          // Prompt in the left column → preview (mainRow) takes the full height.
+          leftPanel.appendChild(promptWrap);
+          promptTA.style.height="94px"; // a little taller to use the column space
+        } else {
+          // Classic: wide prompt under the preview (original 80px height).
+          pad.appendChild(promptWrap);
+          promptTA.style.height="80px";
+        }
+      };
 
       // ── Node-local fullscreen overlay ────────────────────────────────────
       let _nodeFsOv=null;
@@ -1635,14 +1691,6 @@ app.registerExtension({
         _nfTopBar.append(_nfName,_nfCloseBtn);
         const _nfMediaWrap=mk("div",{width:"100%",height:"100%",display:"flex",
           alignItems:"center",justifyContent:"center",padding:"48px 16px 16px",boxSizing:"border-box"});
-        const _nfPillRow=mk("div",{display:"flex",gap:"6px",justifyContent:"center",
-          flexWrap:"wrap",marginTop:"8px"});
-        const _nfPill=(t)=>{
-          const p=mk("div",{fontSize:"9px",color:"rgba(255,255,255,.55)",fontWeight:"600",
-            border:"1px solid rgba(255,255,255,.15)",borderRadius:"20px",
-            padding:"2px 9px",letterSpacing:".04em",whiteSpace:"nowrap",background:"rgba(255,255,255,.05)"});
-          tx(p,t);return p;
-        };
         const _nfClose=()=>{
           if(ov._cleanupCmp){ov._cleanupCmp();ov._cleanupCmp=null;}
           if(ov._cleanupImg){ov._cleanupImg();ov._cleanupImg=null;}
@@ -1650,7 +1698,7 @@ app.registerExtension({
           ov.style.display="none";
           const img=_nfMediaWrap.querySelector("img");
           if(img) img.src="";
-          _nfMediaWrap.innerHTML="";_nfPillRow.innerHTML="";
+          _nfMediaWrap.innerHTML="";
           // Restore preview action buttons
           if(typeof previewUseWrap!=="undefined") previewUseWrap.style.visibility="";
           if(typeof previewDelBtn!=="undefined") previewDelBtn.style.visibility="";
@@ -2561,6 +2609,7 @@ app.registerExtension({
         _sketchSize=v;
         _sketchSizeSlider.value=String(Math.min(v,500));_sketchSizeNumInp.value=String(v);
       });
+      _skSizeRow.title="Brush size — [ smaller · ] larger  (Shift = ×10)";
       // Allow typing beyond slider max — number input has no hard cap
       _skSizeRow.querySelector("input[type=number]").removeAttribute("max");
       const _skSoftRow=_mkSliderRow("Hardness",0,100,100,(v)=>{ _sketchSoftness=1-v/100; });
@@ -4377,6 +4426,11 @@ app.registerExtension({
           case"r":case"R":e.preventDefault();e.stopPropagation();_sketchSetTool("rect");break;
           case"c":case"C":e.preventDefault();e.stopPropagation();_sketchSetTool("circle");break;
           case"v":case"V":e.preventDefault();e.stopPropagation();_sketchSetTool("move");break;
+          // Photoshop / Krita style brush-size shortcuts ( [ smaller, ] larger; shift = ×10 )
+          case"[":e.preventDefault();e.stopPropagation();_sketchSetSize(_sketchSize-1);break;
+          case"]":e.preventDefault();e.stopPropagation();_sketchSetSize(_sketchSize+1);break;
+          case"{":e.preventDefault();e.stopPropagation();_sketchSetSize(_sketchSize-10);break;
+          case"}":e.preventDefault();e.stopPropagation();_sketchSetSize(_sketchSize+10);break;
           case"Delete":case"Backspace":
             e.preventDefault();e.stopPropagation();
             if(_sketchLayers.length>1){
@@ -4533,6 +4587,7 @@ app.registerExtension({
         display:"none",flexDirection:"column",boxSizing:"border-box",
         opacity:"0",transition:"opacity 0.15s ease",
       });
+      _maskOv.setAttribute("tabindex","-1"); // focusable so keyboard shortcuts work
 
       // ── Shared state ──────────────────────────────────────────────────────
       let _maskMode="inpaint";   // "inpaint" | "outpaint"
@@ -4543,6 +4598,7 @@ app.registerExtension({
       let _maskHardness=1; // 1=hard, 0=fully soft
       let _maskDrawing=false;
       let _maskLastX=0,_maskLastY=0;
+      let _maskRectStart=null,_maskRectEnd=null; // marquee (rectangle select) drag corners, canvas coords
       let _maskCanvasW=512,_maskCanvasH=512;
       let _maskHistory=[];
       let _maskSourceImgEl=null;
@@ -4564,6 +4620,13 @@ app.registerExtension({
         transform:"translate(-50%,-50%)",
       });
       _maskCanvasWrap.appendChild(_maskCursor);
+
+      // Marquee (rectangle select) preview — inside the wrap so it scales with zoom
+      const _maskRectPreview=mk("div",{
+        position:"absolute",border:`2px dashed ${LIME}`,background:"rgba(240,255,65,.18)",
+        pointerEvents:"none",display:"none",zIndex:"11",boxSizing:"border-box",
+      });
+      _maskCanvasWrap.appendChild(_maskRectPreview);
 
       // Outpaint handles overlay (sits on top of canvas wrap, same coordinate space)
       const _opHandleOv=mk("div",{
@@ -4681,6 +4744,37 @@ app.registerExtension({
         for(let i=0;i<=steps;i++){const t=i/steps;_maskDraw(x1+t*(x2-x1),y1+t*(y2-y1));}
       };
 
+      // ── Marquee (rectangle select) — drag a box to mask a rectangular area ──
+      const _maskUpdateRectPreview=()=>{
+        if(!_maskRectStart||!_maskRectEnd){ _maskRectPreview.style.display="none"; return; }
+        const x0=Math.min(_maskRectStart.x,_maskRectEnd.x);
+        const y0=Math.min(_maskRectStart.y,_maskRectEnd.y);
+        const w=Math.abs(_maskRectEnd.x-_maskRectStart.x);
+        const h=Math.abs(_maskRectEnd.y-_maskRectStart.y);
+        _maskRectPreview.style.display="block";
+        _maskRectPreview.style.left=x0+"px";_maskRectPreview.style.top=y0+"px";
+        _maskRectPreview.style.width=w+"px";_maskRectPreview.style.height=h+"px";
+      };
+      const _maskCommitRect=()=>{
+        _maskRectPreview.style.display="none";
+        if(!_maskRectStart||!_maskRectEnd){ _maskRectStart=null;_maskRectEnd=null; return; }
+        const x0=Math.max(0,Math.min(_maskRectStart.x,_maskRectEnd.x));
+        const y0=Math.max(0,Math.min(_maskRectStart.y,_maskRectEnd.y));
+        const x1=Math.min(_maskCanvasW,Math.max(_maskRectStart.x,_maskRectEnd.x));
+        const y1=Math.min(_maskCanvasH,Math.max(_maskRectStart.y,_maskRectEnd.y));
+        _maskRectStart=null;_maskRectEnd=null;
+        const w=x1-x0,h=y1-y0;
+        if(w<1||h<1) return;
+        _maskSaveHistory();
+        const ctx=_maskCtx();
+        ctx.save();
+        ctx.globalCompositeOperation="source-over";
+        ctx.fillStyle="rgba(255,255,255,1)";
+        ctx.fillRect(x0,y0,w,h);
+        ctx.restore();
+        _maskComposite();
+      };
+
       // ── Top bar ───────────────────────────────────────────────────────────
       const _maskTopBar=mk("div",{
         display:"flex",alignItems:"center",gap:"6px",padding:"6px 10px",
@@ -4733,18 +4827,24 @@ app.registerExtension({
       };
       const _maskBrushBtn=_mkMaskToolBtn("●","Brush");
       const _maskEraserBtn=_mkMaskToolBtn("○","Eraser");
+      const _maskRectBtn=_mkMaskToolBtn("▭","Rect");
+      _maskRectBtn.title="Rectangle marquee — drag to mask a rectangular area [R]";
 
       const _maskSetTool=(t)=>{
         _maskTool=t;
         _maskBrushBtn._setActive(t==="brush");
         _maskEraserBtn._setActive(t==="eraser");
-        if(_maskMode==="inpaint") _maskViewport.style.cursor="none";
+        _maskRectBtn._setActive(t==="rect");
+        if(_maskMode==="inpaint") _maskViewport.style.cursor=t==="rect"?"crosshair":"none";
+        if(t==="rect") _maskCursor.style.display="none";
       };
       _maskBrushBtn.onclick=()=>_maskSetTool("brush");
       _maskEraserBtn.onclick=()=>_maskSetTool("eraser");
+      _maskRectBtn.onclick=()=>_maskSetTool("rect");
 
       // Brush size group — compact for single-row layout
       const _maskSizeLbl=mk("div",{fontSize:"8px",color:C.muted,whiteSpace:"nowrap",flexShrink:"0"});tx(_maskSizeLbl,"Size");
+      _maskSizeLbl.title="Brush size — [ smaller · ] larger  (Shift = larger steps)";
       const _maskSizeSlider=mk("input",{width:"60px",accentColor:LIME,flexShrink:"0"},{type:"range",min:"2",max:"500",step:"1",value:String(_maskSize)});
       const _maskSizeNum=mk("input",{
 width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
@@ -4779,7 +4879,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       _maskHardNum.oninput=()=>_maskSyncHard(_maskHardNum.value);
 
       // Brush-only controls group (hidden in outpaint mode)
-      const _maskBrushGroup=[_maskBrushBtn,_maskEraserBtn,_mkMaskSep(),_maskSizeLbl,_maskSizeSlider,_maskSizeNum,_mkMaskSep(),_maskHardLbl,_maskHardSlider,_maskHardNum,_mkMaskSep(),_maskUndoBtn,_maskClearBtn,_mkMaskSep()];
+      const _maskBrushGroup=[_maskBrushBtn,_maskEraserBtn,_maskRectBtn,_mkMaskSep(),_maskSizeLbl,_maskSizeSlider,_maskSizeNum,_mkMaskSep(),_maskHardLbl,_maskHardSlider,_maskHardNum,_mkMaskSep(),_maskUndoBtn,_maskClearBtn,_mkMaskSep()];
 
       // Confirm / Cancel
       const _maskSpacer=mk("div",{flex:"1"});
@@ -4935,6 +5035,15 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         _opResRefresh();
       };
 
+      // Feather width (px) the mask fades into the original at the seam.
+      // S.opFeather === 0 means "auto": the original min(cap, edge/div) heuristic.
+      // A user value overrides it, clamped so it never exceeds half the original region.
+      const _opFeatherPx=(edgeMin,autoCap,autoDiv)=>{
+        const auto=Math.floor(edgeMin/(autoDiv||6));
+        const base=(+S.opFeather>0)?+S.opFeather:Math.min(autoCap,auto);
+        return Math.max(1,Math.min(base,Math.floor(edgeMin/2)));
+      };
+
       const _opCalcDims=()=>{
         const curTop=Math.max(0,Math.round((+_opTopField._inp.value||0)/8)*8);
         const curRight=Math.max(0,Math.round((+_opRightField._inp.value||0)/8)*8);
@@ -4974,12 +5083,30 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       _opFieldsRow.append(_opTopField,_opRightField,_opBottomField,_opLeftField);
       _opRow1.append(_opExpandLbl,_opFieldsRow);
 
-      // ── Row 2: size badge + scale ─────────────────────────────────────────
+      // ── Feather control: how far the mask fades into the original at the seam ──
+      // 0 = Auto (the original heuristic). Higher = softer blend, fewer visible seams.
+      const _opFeatherRow=mk("div",{
+        display:"flex",alignItems:"center",gap:"6px",
+        border:`1px solid ${C.border}`,borderRadius:"6px",padding:"5px 10px",
+        background:C.bg1,
+      });
+      const _opFeatherLbl=mk("span",{fontSize:"9px",fontWeight:"600",color:C.muted,whiteSpace:"nowrap"});
+      tx(_opFeatherLbl,"Seam feather");
+      const _opFeatherSlider=mk("input",{width:"82px",accentColor:LIME,flexShrink:"0"},
+        {type:"range",min:"0",max:"256",step:"4",value:String(+S.opFeather||0)});
+      const _opFeatherVal=mk("span",{fontSize:"9px",color:LIME,fontWeight:"700",whiteSpace:"nowrap",minWidth:"30px"});
+      const _opFeatherFmt=()=>{ const v=+S.opFeather||0; tx(_opFeatherVal, v>0?`${v}px`:"Auto"); };
+      _opFeatherFmt();
+      _opFeatherRow.title="How far the mask fades into the original at the seam. Higher = softer blend, fewer visible seams. 0 = Auto.";
+      _opFeatherSlider.oninput=()=>{ S.opFeather=+_opFeatherSlider.value||0; _opFeatherFmt(); persist(); };
+      _opFeatherRow.append(_opFeatherLbl,_opFeatherSlider,_opFeatherVal);
+
+      // ── Row 2: size badge + scale + feather ───────────────────────────────
       const _opRow2=mk("div",{
         display:"none",alignItems:"center",justifyContent:"center",gap:"10px",
         padding:"6px 16px 10px",borderTop:`1px solid rgba(255,255,255,.05)`,
       });
-      _opRow2.append(_opDimsLbl,_opScaleRow);
+      _opRow2.append(_opDimsLbl,_opScaleRow,_opFeatherRow);
       _opBar.append(_opRow1,_opRow2);
 
       // ── Outpaint drag handles (canvas-space, inside _opHandleOv) ─────────
@@ -5100,7 +5227,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         _maskMode=m;
         _rebuildMaskTopBar();
         const isInp=m==="inpaint";
-        _maskViewport.style.cursor=isInp?"none":"default";
+        _maskViewport.style.cursor=isInp?(_maskTool==="rect"?"crosshair":"none"):"default";
         _maskDropZone.style.cursor=isInp?"none":"pointer";
         _maskCursor.style.display="none";
         _opShowHandles(!isInp);
@@ -5298,7 +5425,9 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         // is irrelevant and confusing (shows as red overlay). Mask is rebuilt at Apply Changes.
         if(mode==="outpaint"){ _maskSavedData=null;_maskSavedW=0;_maskSavedH=0; }
         _opRow2.style.display="none";
+        _maskRectStart=null;_maskRectEnd=null;_maskRectPreview.style.display="none";
         _maskOv.style.display="flex";
+        _maskOv.focus();
         requestAnimationFrame(()=>_maskOv.style.opacity="1");
         _setMaskMode(mode||"inpaint");
         _maskSetTool("brush");_maskSyncSize(_maskSize);
@@ -5370,6 +5499,12 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         if(e.button!==0||_maskMode!=="inpaint") return;
         const pos=_maskCanvasCoords(e);
         if(pos.x<0||pos.y<0||pos.x>_maskCanvasW||pos.y>_maskCanvasH) return;
+        if(_maskTool==="rect"){
+          _maskDrawing=true;
+          _maskRectStart={x:pos.x,y:pos.y};_maskRectEnd={x:pos.x,y:pos.y};
+          _maskUpdateRectPreview();
+          return;
+        }
         _maskSaveHistory();
         _maskDrawing=true;_maskLastX=pos.x;_maskLastY=pos.y;
         _maskDraw(pos.x,pos.y);
@@ -5384,6 +5519,15 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
           return;
         }
         if(_maskMode!=="inpaint") return;
+        if(_maskTool==="rect"){
+          _maskCursor.style.display="none";
+          if(_maskDrawing&&_maskRectStart){
+            const pos=_maskCanvasCoords(e);
+            _maskRectEnd={x:Math.max(0,Math.min(_maskCanvasW,pos.x)),y:Math.max(0,Math.min(_maskCanvasH,pos.y))};
+            _maskUpdateRectPreview();
+          }
+          return;
+        }
         const {r}=_maskVpScale();
         if(e.clientX>=r.left&&e.clientY>=r.top&&e.clientX<=r.right&&e.clientY<=r.bottom){
           const pos=_maskCanvasCoords(e);
@@ -5402,7 +5546,8 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       });
 
       document.addEventListener("mouseup",()=>{
-        if(_maskPanning){_maskPanning=false;_maskViewport.style.cursor=_maskSpaceDown?"grab":(_maskMode==="inpaint"?"none":"default");}
+        if(_maskPanning){_maskPanning=false;_maskViewport.style.cursor=_maskSpaceDown?"grab":(_maskMode==="inpaint"?(_maskTool==="rect"?"crosshair":"none"):"default");}
+        if(_maskDrawing&&_maskTool==="rect") _maskCommitRect();
         _maskDrawing=false;
       });
 
@@ -5414,10 +5559,13 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         if(e.target.tagName==="INPUT") return;
         if(e.key==="b"||e.key==="B"){_setMaskMode("inpaint");_maskSetTool("brush");}
         if(e.key==="e"||e.key==="E"){_setMaskMode("inpaint");_maskSetTool("eraser");}
+        if(e.key==="r"||e.key==="R"){_setMaskMode("inpaint");_maskSetTool("rect");}
         if((e.ctrlKey||e.metaKey)&&e.key==="z") _maskUndo();
         if(e.key==="Escape") _maskCancelBtn.click();
         if(e.key==="[") _maskSyncSize(_maskSize-5);
         if(e.key==="]") _maskSyncSize(_maskSize+5);
+        if(e.key==="{") _maskSyncSize(_maskSize-25);
+        if(e.key==="}") _maskSyncSize(_maskSize+25);
       },{capture:true});
 
       // ── Confirm ───────────────────────────────────────────────────────────
@@ -5460,7 +5608,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
           mskX.fillRect(_opLeft,_opTop,_maskCanvasW,_maskCanvasH);
           // Feather: gradient bites INTO the original f px — white(new)→black(orig) transition
           // This lets the model see original content at the boundary and blend naturally
-          const f=Math.min(48,Math.floor(Math.min(_maskCanvasW,_maskCanvasH)/6));
+          const f=_opFeatherPx(Math.min(_maskCanvasW,_maskCanvasH),48);
           const L=_opLeft,T=_opTop,R=_opLeft+_maskCanvasW,B=_opTop+_maskCanvasH;
           const fade=(x0,y0,x1,y1,gStartX,gStartY,gEndX,gEndY)=>{
             const g=mskX.createLinearGradient(gStartX,gStartY,gEndX,gEndY);
@@ -5596,7 +5744,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
                 L=_savedOpLeft; T=_savedOpTop;
                 R=W-_savedOpRight; B=H-_savedOpBottom;
               }
-              const feather=Math.min(128,Math.min(R-L,B-T)/4);
+              const feather=_opFeatherPx(Math.min(R-L,B-T),128,4);
 
               // Step 1: fill everything white (all new areas will be masked)
               ctx.fillStyle="#ffffff";
@@ -6739,7 +6887,22 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         });
         tx(_rowNum,String(idx+1));
 
-        // Trigger words area — shown below the control row (subtle, not a heavy block)
+        // Enable/disable toggle — lets the user keep a LoRA loaded but inactive,
+        // instead of zeroing its strength. Sits at the front of the row.
+        const _enInit=S.userLoras[idx].enabled!==false;
+        const enTog=mk("div",{
+          width:"30px",height:"16px",borderRadius:"8px",position:"relative",
+          cursor:"pointer",flexShrink:"0",transition:"background .18s",
+          background:_enInit?"rgba(240,255,65,.85)":"rgba(255,255,255,.13)",
+        });
+        enTog.title="Toggle this LoRA on/off (keeps it loaded when off)";
+        const enThumb=mk("div",{position:"absolute",top:"2px",left:_enInit?"16px":"2px",
+          width:"12px",height:"12px",borderRadius:"50%",
+          background:_enInit?"#111":"#888",transition:"left .18s,background .18s"});
+        enTog.appendChild(enThumb);
+
+        // Trigger words area — shown below the control row (subtle, not a heavy block).
+        // paddingLeft aligns it under the dropdown: badge(17)+gap(7).
         const trigRow=mk("div",{display:"none",flexDirection:"column",gap:"6px",
           marginTop:"1px",paddingLeft:"24px",
         });
@@ -6933,20 +7096,41 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
           } else {
             S.userLoras[idx]=_emptyUserLora();
             S.userLoras[idx].strength=0;
-            ulEnabled.checked=true;
             ulDD.set("none");
             ulStr.value="0";
             trigRow.style.display="none";
+            _applyEnabled();
             _applyRowState();
           }
           _ulUpdateBtn();persist();
         };
 
-        rowCtrl.append(_rowNum,ulEnabledWrap,ulDD.el,ulStr,ulDel);
+        // Reflect the slot's enabled state: move the switch and dim the controls
+        // when off (values are kept — only generation skips a disabled slot).
+        // To fully empty a slot, set the dropdown to "none" (handled in ulDD onChange).
+        const _applyEnabled=()=>{
+          const en=S.userLoras[idx].enabled!==false;
+          enTog.style.background=en?"rgba(240,255,65,.85)":"rgba(255,255,255,.13)";
+          enThumb.style.left=en?"16px":"2px";
+          enThumb.style.background=en?"#111":"#888";
+          const op=en?"1":"0.4";
+          _rowNum.style.opacity=op; ulDD.el.style.opacity=op;
+          ulStr.style.opacity=op; trigRow.style.opacity=op;
+          ulDel.style.opacity=op;
+        };
+        enTog.onclick=()=>{
+          S.userLoras[idx].enabled=!(S.userLoras[idx].enabled!==false);
+          _applyEnabled();_ulUpdateBtn();persist();
+        };
+
+        rowCtrl.append(_rowNum,ulDD.el,ulStr,enTog,ulDel);
         row.append(rowCtrl,trigRow);
         row._dd=ulDD;row._str=ulStr;
-        row._reset=()=>{ ulEnabled.checked=true; ulDD.set("none"); ulStr.value="0"; trigRow.style.display="none"; _applyRowState(); };
+        // Clear the slot's UI completely, including the trigger row (used on restore).
+        row._reset=()=>{ S.userLoras[idx]=_emptyUserLora(); S.userLoras[idx].strength=0; ulDD.set("none"); ulStr.value="0"; trigRow.style.display="none"; _applyEnabled(); _applyRowState(); };
+        row._applyEnabled=_applyEnabled;
         row._refreshTrig=_refreshTrigWords;
+        _applyEnabled();
 
         if(S.userLoras[idx].name&&S.userLoras[idx].name!=="none") _refreshTrigWords(S.userLoras[idx].name);
         _applyRowState();
@@ -8581,6 +8765,9 @@ ${base}`;
         // The external node is serialized and added to the prompt so ComfyUI can find it.
         const _selfNode=app.graph.getNodeById(self.id);
         const _extSlot=(name)=>{
+          // Toggle off = external inputs are ignored even if a wire is still connected;
+          // the internal dropdown model is used. The toggle is the single source of truth.
+          if(!S.extLoaders) return null;
           if(!_selfNode) return null;
           const inputs=_selfNode.inputs||[];
           const slot=inputs.find(i=>i.name===name);
@@ -8617,6 +8804,8 @@ ${base}`;
           let prev=chainSrc;
           (S.userLoras||[]).forEach((ul,i)=>{
             if(!_isActiveUserLora(ul)) return;
+            if(!ul.name||ul.name==="none"||ul.enabled===false||!(+(ul.strength||0)>0)) return;
+>>>>>>> upstream/master
             const id=`${idPrefix}UL${i+1}`;
             prompt[id]={
               inputs:{lora_name:ul.name,strength_model:+(ul.strength??1.0),model:toPrev(prev)},
@@ -9815,7 +10004,7 @@ ${base}`;
               if(match&&match!=="none"){
                 S.userLoras[i].name=match; S.userLoras[i].strength=+(ul.s??1); S.userLoras[i].disabled=false;
                 _ulRowEls[i]._dd.set(match); _ulRowEls[i]._str.value=String(S.userLoras[i].strength);
-                _ulRowEls[i]._refreshTrig(match);
+                _ulRowEls[i]._refreshTrig(match); _ulRowEls[i]._applyEnabled();
               }
             });
           }
@@ -10199,7 +10388,10 @@ ${base}`;
       // _galNeedsRefresh is set to true in showFinal so gallery auto-refreshes on next open
 
       // ── ASSEMBLE ─────────────────────────────────────────────────────────
-      pad.append(topBar,mainRow,promptWrap);
+      pad.append(topBar,mainRow);
+      // Layout mode places promptWrap either in the left column ("tall" → preview
+      // gets full height, good for portrait) or full-width under the preview ("classic").
+      _applyLayout(S.layoutMode);
       root.appendChild(helpOverlay);
       root.appendChild(settingsOverlay);
       root.appendChild(galleryOverlay);
@@ -10303,7 +10495,7 @@ ${base}`;
           };
         } else if(finalImg.style.display!=="none"&&finalImg.src){
           src=finalImg.src;
-          name=finalImg.src.split("/").pop().split("?")[0]||"Image";
+          name="Preview";
         }
         if(!src) return;
 
@@ -10531,6 +10723,18 @@ ${base}`;
       _loadLLMModels();
       if(S.extLoaders) _applyExtLoaders(true);
       setPill(activePill);
+      if(S.extLoaders){
+        _applyExtLoaders(true);
+      } else {
+        // Toggle is off, but a GGUF wire may have been kept connected (and restored
+        // by litegraph from the saved workflow). Resize the node to fit any such slots.
+        const _n=app.graph.getNodeById(self.id)||self;
+        if(_n){
+          const _keep=(_n.inputs||[]).filter(i=>_extInputNames.includes(i.name)).length;
+          if(_keep>0){ _n.size=[NODE_W, NODE_H+_keep*_slotH]; _n.setDirtyCanvas(true,true); }
+        }
+      }
+      _refreshExtInputUI();
 
       // Auto-refresh Settings dropdowns when connections change
       self.onConnectionsChange=function(){ _refreshExtInputUI(); };
