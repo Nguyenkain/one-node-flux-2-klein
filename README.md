@@ -23,7 +23,7 @@ The node has been updated since the tutorial was recorded - check the [Changelog
 
 ## What it does
 
-The node has 5 modes, switchable with a single click:
+The node has 6 modes, switchable with a single click:
 
 **T2I** - standard text to image generation.
 
@@ -37,6 +37,8 @@ The node has 5 modes, switchable with a single click:
 - Outpaint: expand the image in any direction by dragging the edges.
 
 **FACESWAP** - swap a face from a source image onto a target. Requires a Faceswap LoRA.
+
+**POSE** - copy the pose from one image onto the character from a reference image. Requires the DWPose preprocessor node and a RefControl pose LoRA (a 9B LoRA only for now).
 
 ---
 
@@ -55,6 +57,15 @@ You need one additional custom node for inpaint and outpaint modes:
 git clone https://github.com/lquesada/ComfyUI-Inpaint-CropAndStitch.git
 ```
 
+For POSE mode you also need [comfyui_controlnet_aux](https://github.com/Fannovel16/comfyui_controlnet_aux) by Fannovel16, which provides the DWPose preprocessor. On the Windows portable build, run these two commands from your `ComfyUI_windows_portable` folder:
+
+```
+git clone https://github.com/Fannovel16/comfyui_controlnet_aux ComfyUI/custom_nodes/comfyui_controlnet_aux
+python_embeded\python.exe -s -m pip install -r ComfyUI/custom_nodes/comfyui_controlnet_aux/requirements.txt
+```
+
+On other setups (venv, ComfyUI Desktop, Linux/Mac), follow the install instructions in the [comfyui_controlnet_aux readme](https://github.com/Fannovel16/comfyui_controlnet_aux#installation).
+
 Restart ComfyUI. The node appears as **One Node · FLUX.2 [klein]**.
 
 ---
@@ -65,7 +76,7 @@ This node works with any FLUX.2 [klein] model officially released by Black Fores
 
 You will find all officially released FLUX.2 [klein] models on the [Black Forest Labs HuggingFace page](https://huggingface.co/collections/black-forest-labs/flux2). Pick the variant that fits your VRAM and use case. You will need a diffusion model, a matching text encoder, and the VAE.
 
-The Faceswap LoRA is required for the Faceswap mode. The BiRefNet model is optional, only needed for the Remove Background feature in PAINT mode.
+The Faceswap LoRA is required for the Faceswap mode, and the Pose LoRA for the POSE mode. The BiRefNet model is optional, only needed for the Remove Background feature in PAINT mode.
 
 **Text encoder** (place in `models/text_encoders/`)
 - [qwen_3_8b for 9b models](https://huggingface.co/Comfy-Org/vae-text-encorder-for-flux-klein-9b/tree/main/split_files/text_encoders)
@@ -77,6 +88,9 @@ The Faceswap LoRA is required for the Faceswap mode. The BiRefNet model is optio
 **Faceswap LoRA** (place in `models/loras/`)
 - [BFS Head Swap v1 (9b)](https://huggingface.co/Alissonerdx/BFS-Best-Face-Swap/blob/main/bfs_head_v1_flux-klein_9b_step3500_rank128.safetensors)
 - [BFS Head Swap v1 (4b)](https://huggingface.co/Alissonerdx/BFS-Best-Face-Swap/blob/main/bfs_head_v1_flux-klein_4b.safetensors)
+
+**Pose LoRA** (place in `models/loras/`) — for POSE mode
+- [RefControl v2 Poses (9b)](https://huggingface.co/thedeoxen/refcontrol-FLUX.2-klein-9B-reference-pose-lora/blob/main/refcontrol_v2_poses.safetensors)
 
 **Remove Background** (place in `models/background_removal/`)
 - [birefnet](https://huggingface.co/Comfy-Org/BiRefNet/tree/main/background_removal)
@@ -108,6 +122,31 @@ Built with the help of [Claude](https://claude.ai) by Anthropic.
 ---
 
 ## Changelog
+
+### June 26, 2026
+
+**New POSE mode**
+Copy the pose from one image onto the character from a reference image. A DWPose skeleton drives the pose while the reference image drives the appearance, through a RefControl pose LoRA. Requires the comfyui_controlnet_aux node and a RefControl pose LoRA, see the Installation and Models sections.
+
+**Bigger preview layout**
+A new layout toggle in the top bar (just right of the Settings button) moves the prompt into the sidebar so the preview window gets the full height, which is handy for portrait images. The classic wide-prompt layout stays the default.
+
+**Keep GGUF connected when toggling External Models off**
+The External Models toggle is now the single source of truth. Turning it off keeps your external loader wired but uses the internal dropdowns, so you can switch between the built-in models and an external setup without reconnecting anything.
+
+**Per-slot LoRA on/off toggle**
+Each LoRA slot now has a switch, so you can deactivate a LoRA while keeping it loaded, without losing its strength value. This replaces the old per-slot clear button. Thanks to @triatomic for the contribution.
+
+**Paint shortcuts and inpaint marquee**
+`[` and `]` change the brush size in the Sketch editor (`{` / `}` for bigger steps), and the inpaint mask editor gains a rectangle marquee tool (`R`) for masking a rectangular area. Thanks to @triatomic.
+
+**Outpaint seam feather**
+A Seam feather slider in the outpaint editor controls how far the mask fades into the original, so you can soften visible seams. Defaults to Auto (the previous behaviour).
+
+**More reliable LoRA strength drag**
+The drag-to-scrub on LoRA strength now works consistently, including fast flicks and drags started near the edge of the field. Thanks to @triatomic.
+
+---
 
 ### June 23, 2026
 
