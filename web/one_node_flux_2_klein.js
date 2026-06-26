@@ -6889,7 +6889,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
 
         // Enable/disable toggle — lets the user keep a LoRA loaded but inactive,
         // instead of zeroing its strength. Sits at the front of the row.
-        const _enInit=S.userLoras[idx].enabled!==false;
+        const _enInit=!S.userLoras[idx].disabled;
         const enTog=mk("div",{
           width:"30px",height:"16px",borderRadius:"8px",position:"relative",
           cursor:"pointer",flexShrink:"0",transition:"background .18s",
@@ -7096,6 +7096,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
           } else {
             S.userLoras[idx]=_emptyUserLora();
             S.userLoras[idx].strength=0;
+            S.userLoras[idx].disabled=false;
             ulDD.set("none");
             ulStr.value="0";
             trigRow.style.display="none";
@@ -7109,7 +7110,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         // when off (values are kept — only generation skips a disabled slot).
         // To fully empty a slot, set the dropdown to "none" (handled in ulDD onChange).
         const _applyEnabled=()=>{
-          const en=S.userLoras[idx].enabled!==false;
+          const en=!S.userLoras[idx].disabled;
           enTog.style.background=en?"rgba(240,255,65,.85)":"rgba(255,255,255,.13)";
           enThumb.style.left=en?"16px":"2px";
           enThumb.style.background=en?"#111":"#888";
@@ -7119,8 +7120,8 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
           ulDel.style.opacity=op;
         };
         enTog.onclick=()=>{
-          S.userLoras[idx].enabled=!(S.userLoras[idx].enabled!==false);
-          _applyEnabled();_ulUpdateBtn();persist();
+          S.userLoras[idx].disabled=!S.userLoras[idx].disabled;
+          _applyEnabled();_applyRowState();_ulUpdateBtn();persist();
         };
 
         rowCtrl.append(_rowNum,ulDD.el,ulStr,enTog,ulDel);
@@ -8804,8 +8805,6 @@ ${base}`;
           let prev=chainSrc;
           (S.userLoras||[]).forEach((ul,i)=>{
             if(!_isActiveUserLora(ul)) return;
-            if(!ul.name||ul.name==="none"||ul.enabled===false||!(+(ul.strength||0)>0)) return;
->>>>>>> upstream/master
             const id=`${idPrefix}UL${i+1}`;
             prompt[id]={
               inputs:{lora_name:ul.name,strength_model:+(ul.strength??1.0),model:toPrev(prev)},
