@@ -84,14 +84,5 @@
     "inputs": { "filename_prefix": "one-node-flux-2-klein/krea", "images": ["KREA:DECODE", 0] },
     "class_type": "SaveImage",
     "_meta": { "title": "Save Image" }
-  },
-  "KREA:CLEAN_VRAM": {
-    "inputs": {
-      "offload_model": true,
-      "offload_cache": true,
-      "anything": ["KREA:SAVE", 0]
-    },
-    "class_type": "VRAMCleanup",
-    "_meta": { "title": "Clean VRAM" }
   }
 }

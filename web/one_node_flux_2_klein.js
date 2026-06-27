@@ -701,7 +701,10 @@ app.registerExtension({
       const _loadFamilyUserLoras=(family)=>{
         S.userLoras=_cloneUserLoras(_ensureFamilyUserLoras(family));
       };
-      const _isActiveUserLora=(ul)=>!!(ul&&ul.name&&ul.name!=="none"&&!ul.disabled&&+(ul.strength||0)>0);
+      const _isActiveUserLora=(ul)=>{
+        const strength=+(ul?.strength);
+        return !!(ul&&ul.name&&ul.name!=="none"&&!ul.disabled&&isFinite(strength)&&strength!==0);
+      };
       S.userLorasByFamily=_normalizeUserLorasByFamily(S.userLorasByFamily||{});
       _loadFamilyUserLoras(S.modelFamily);
       // Sync S.prompt to the active pill's slot on init (covers first load before _pillPromptKey is available)
@@ -1691,6 +1694,13 @@ app.registerExtension({
         _nfTopBar.append(_nfName,_nfCloseBtn);
         const _nfMediaWrap=mk("div",{width:"100%",height:"100%",display:"flex",
           alignItems:"center",justifyContent:"center",padding:"48px 16px 16px",boxSizing:"border-box"});
+        const _nfPillRow=mk("div",{display:"flex",gap:"6px",justifyContent:"center",flexWrap:"wrap"});
+        const _nfPill=(t)=>{
+          const p=mk("div",{fontSize:"9px",color:"rgba(255,255,255,.55)",fontWeight:"600",
+            border:"1px solid rgba(255,255,255,.15)",borderRadius:"20px",
+            padding:"2px 9px",letterSpacing:".04em",whiteSpace:"nowrap",background:"rgba(255,255,255,.05)"});
+          tx(p,t);return p;
+        };
         const _nfClose=()=>{
           if(ov._cleanupCmp){ov._cleanupCmp();ov._cleanupCmp=null;}
           if(ov._cleanupImg){ov._cleanupImg();ov._cleanupImg=null;}
@@ -7381,7 +7391,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
               {label:"Fortnite 3D",prompt:"Change style to Fortnite stylized 3D, vibrant colors, clean cartoonish textures, smooth lighting, battle royale aesthetic."},
             ]},
             {cat:"OTHER",items:[
-              {label:"Enhance",prompt:"Enhance the overall image quality by restoring fine details and sharpening the focus. Remove all types of blur, including motion and lens blur, while preserving the original features, textures, and likeness. Increase clarity and micro-contrast without introducing artifacts, ensuring a clean, high-definition result that stays true to the source."},
+              {label:"Enhance",prompt:"Enhance image for current model with richer, production-ready detail while preserving core subject and intent. Strengthen scene context, cinematic lighting, body pose, facial expression, camera framing, textures, materials, depth, and atmosphere. Keep composition coherent, natural, and model-friendly without adding unwanted objects or artifacts."},
               {label:"Text edit",prompt:"Replace the existing text \"[OLD TEXT]\" with the new text \"[NEW TEXT]\" in the image. Replicate the exact typography, font family, letter shapes, color palette, effects, and texturing of the original text perfectly. Maintain the exact same position, scale, and alignment within the scene."},
               {label:"Try-on",prompt:"Using Image 1 as the subject reference and Image 2 as the outfit reference: Modify only the clothing of the person from Image 1, completely replacing it with the exact outfit, style, textures, materials, and colors shown in Image 2. Retain the exact face, identity, hair, expression, pose, and background from Image 1. Conform the new clothing from Image 2 realistically to the subject's body shape and the lighting environment of Image 1. Maintain the original camera framing.",dual:true},
               {label:"Texture transfer",prompt:"Using Image 1 as the subject and geometry reference, and Image 2 as the texture and material reference: Completely replace the surface material of the subject in Image 1 with the exact tactile texture, pattern, and material characteristics shown in Image 2. Conform the new texture perfectly to the 3D contours, shapes, curves, and lighting of Image 1. Maintain the original face, pose, anatomy, and background from Image 1 perfectly.",dual:true},
@@ -8214,12 +8224,32 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         if(!base){showError("Prompt Enhance: please enter a prompt first.");return;}
         if(!S.llmModel||S.llmModel==="none"){showError("Prompt Enhance: select an LLM model in Settings.");return;}
         _setPromptEnhanceRunning(true);
-        const enhancePrompt=`You are an expert prompt engineer for FLUX.2 Klein 9B.
+        const isKrea=S.modelFamily==="krea";
+        const enhancePrompt=isKrea
+          ? `You are an expert prompt engineer for Krea 2.
 
-Expand the user's prompt into a detailed, production-ready image generation prompt for FLUX.2 Klein 9B.
-Preserve the user's intent and language if possible. The user prompt may be in any language.
+Expand user's prompt into detailed, production-ready image generation prompt optimized for Krea 2.
+Preserve user's intent, subject, and language if possible. User prompt may be in any language.
+Add concrete visual direction that helps Krea 2 perform better: scene context, environment, lighting, mood, camera framing, lens feel, body pose, facial expression, wardrobe, textures, materials, depth, color palette, atmosphere, and composition.
+Tune enhancement toward Krea-friendly scene clarity with stronger descriptive support for portraits, fashion, and product imagery.
+For portraits and character shots, reinforce identity-safe details like expression, pose, hair, skin texture, eye focus, wardrobe styling, shot type, lens feel, and flattering cinematic lighting.
+For fashion images, reinforce garment silhouette, fabric material, folds, stitching, accessories, runway or editorial posture, styling context, and premium lighting.
+For product images, reinforce product shape, materials, finish, reflections, surface detail, background setup, hero-shot composition, and commercial studio lighting.
+If prompt already specifies details, keep them and refine them instead of replacing them.
+Do not add extra subjects, props, or scene elements unless clearly implied by user's prompt.
+Do not turn prompt into overlong tag spam. Keep it natural, visual, specific, and model-friendly.
 Do not add explanations, markdown, quotes, headings, lists, or commentary.
-Return only the final enhanced prompt.
+Return only final enhanced prompt.
+
+User prompt:
+${base}`
+          : `You are an expert prompt engineer for FLUX.2 Klein 9B.
+
+Expand user's prompt into detailed, production-ready image generation prompt optimized for FLUX.2 Klein 9B.
+Preserve user's intent and language if possible. User prompt may be in any language.
+Strengthen visual clarity, subject detail, materials, texture, lighting, composition, camera framing, and overall prompt quality while staying faithful to original request.
+Do not add explanations, markdown, quotes, headings, lists, or commentary.
+Return only final enhanced prompt.
 
 User prompt:
 ${base}`;
