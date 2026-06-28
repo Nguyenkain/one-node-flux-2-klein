@@ -7044,7 +7044,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
 
       // ── PROMPT ───────────────────────────────────────────────────────────
       const promptWrap=mk("div",{display:"flex",flexDirection:"column",gap:"5px"});
-      const promptHdr=mk("div",{display:"flex",alignItems:"center",gap:"5px"});
+      const promptHdr=mk("div",{display:"flex",alignItems:"center",gap:"5px",flexWrap:"wrap",rowGap:"5px"});
       const promptCap=cap("Prompt");
 
       // ── LoRA overlay ──────────────────────────────────────────────────────
@@ -8556,14 +8556,15 @@ ${base}`;
         background:"none",border:"1px solid rgba(176,102,52,.35)",cursor:"pointer",
         padding:"2px 8px",color:"#d4956a",outline:"none",
         display:"none",alignItems:"center",gap:"5px",borderRadius:"5px",
-        fontSize:"9px",fontWeight:"700",letterSpacing:".04em",
+        fontSize:"9px",fontWeight:"700",letterSpacing:".04em",whiteSpace:"nowrap",
         transition:"all .15s",flexShrink:"0",
       });
       const _kreaPbIcon=document.createElementNS("http://www.w3.org/2000/svg","svg");
       _kreaPbIcon.setAttribute("viewBox","0 0 24 24");_kreaPbIcon.setAttribute("width","10");_kreaPbIcon.setAttribute("height","10");
       _kreaPbIcon.setAttribute("fill","none");_kreaPbIcon.setAttribute("stroke","currentColor");
-      _kreaPbIcon.setAttribute("stroke-width","2");_kreaPbIcon.setAttribute("stroke-linecap","round");
-      _kreaPbIcon.innerHTML=`<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>`;
+      _kreaPbIcon.setAttribute("stroke-width","2");_kreaPbIcon.setAttribute("stroke-linecap","round");_kreaPbIcon.setAttribute("stroke-linejoin","round");
+      _kreaPbIcon.style.display="block";_kreaPbIcon.style.flexShrink="0";
+      _kreaPbIcon.innerHTML=`<path d="M5 3a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2z"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="13" y1="8" x2="17" y2="8"/><line x1="13" y1="12" x2="17" y2="12"/>`;
       const _kreaPbTxt=mk("span");tx(_kreaPbTxt,"Prompt Builder");
       _kreaPbToggle.append(_kreaPbIcon,_kreaPbTxt);
       const _kreaPbUpdateToggle=(active)=>{
@@ -8594,7 +8595,7 @@ ${base}`;
       _refreshPromptModeUI=()=>{
         const isKreaT2I=S.modelFamily==="krea"&&activePill==="t2i";
         const showBuilder=isKreaT2I&&S.kreaPromptMode==="builder";
-        _kreaPbToggle.style.display=isKreaT2I?"":"none";
+        _kreaPbToggle.style.display=isKreaT2I?"inline-flex":"none";
         _kreaPbUpdateToggle(showBuilder);
         if(_refreshKreaCtrlBar) _refreshKreaCtrlBar();
         // Add/remove real Ideogram4PromptBuilderKJ node on canvas
