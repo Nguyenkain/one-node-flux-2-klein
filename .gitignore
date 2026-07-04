@@ -40,3 +40,5 @@ CLAUDE.md
 # Keep directory structure
 !logs/.gitkeep
 !scripts/.gitkeep
+
+*.backup
