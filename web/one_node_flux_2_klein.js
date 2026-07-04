@@ -647,15 +647,27 @@ function _oneNodeChainForward(srcId){
           const hR=await api.fetchApi(`/history/${pid}`);
           const hD=await hR.json();
           const entry=hD[pid];
+          // Collect ALL output images from this run (a batch save node emits N in order),
+          // not just the first — otherwise a batch would collapse to a single image here.
+          const outs=[];
           for(const nd of Object.values(entry?.outputs||{})){
             const imgs=nd.images||nd.gifs||[];
-            const v=imgs.find(x=>x&&x.filename&&x.type==="output"&&(x.subfolder||"").startsWith("one-node-flux-2-klein"));
-            if(v){
-              const cb=Date.now();
-              const url=api.apiURL(`/view?filename=${encodeURIComponent(v.filename)}&type=${encodeURIComponent(v.type||"output")}&subfolder=${encodeURIComponent(v.subfolder||"")}&t=${cb}`);
-              _activeShowFinal?.(url,v.filename,v.subfolder||"");
-              return;
+            for(const x of imgs){
+              if(x&&x.filename&&x.type==="output"&&(x.subfolder||"").startsWith("one-node-flux-2-klein")) outs.push(x);
             }
+          }
+          const batchN=Math.max(1,Math.min(4,+_activeBatchN||1));
+          if(batchN>1 && _activeShowFinalBatch && outs.length>1){
+            _activeShowFinalBatch(outs.slice(0,batchN).map(v=>({filename:v.filename,subfolder:v.subfolder||""})));
+            _activeAutoSend?.();
+            return;
+          }
+          const v=outs[0];
+          if(v){
+            const cb=Date.now();
+            const url=api.apiURL(`/view?filename=${encodeURIComponent(v.filename)}&type=${encodeURIComponent(v.type||"output")}&subfolder=${encodeURIComponent(v.subfolder||"")}&t=${cb}`);
+            _activeShowFinal?.(url,v.filename,v.subfolder||"");
+            return;
           }
         }catch(e){console.warn("[FluxKlein] history fast output:",e);}
       }
@@ -10151,7 +10163,8 @@ ${base}`;
           if(extVae){ delete prompt[W.vae]; prompt[W.decode].inputs.vae=extVae; if(isI2IMode&&prompt[W.vaeEnc]) prompt[W.vaeEnc].inputs.vae=extVae; }
           else set(W.vae,"vae_name",KVAE);
           set(W.promptNeg,"text",DEFAULT_NEG_PROMPT);
-          set(W.save,"filename_prefix","one-node-flux-2-klein/krea");
+          set(W.saveImage,"filename_prefix","one-node-flux-2-klein/krea");
+          _applyAutoSave(W.saveImage);
 
           // Krea2T Enhancer (enabled toggle + strength) — model patcher in the chain
           set(W.enhancer,"enabled",S.kreaEnhancerEnabled!==false);
@@ -10235,6 +10248,10 @@ ${base}`;
             set(W.latent,"width",kw||1024);
             set(W.latent,"height",kh||1024);
           }
+
+          // Batch: I2I latent comes from VAEEncode (repeat it N×); T2I uses EmptyLatentImage.
+          if(isI2IMode) _applyBatchRepeat(W.sampler,"latent_image");
+          else _applyBatchEmpty(W.latent);
 
           const seed=S.randomizeSeed?Math.floor(Math.random()*999999999999):S.seed;
           if(S.randomizeSeed){S.seed=seed;seedInp.setVal(seed);_advSeedInp.setVal(seed);_advSeedRefresh();persist();}
