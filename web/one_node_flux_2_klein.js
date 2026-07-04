@@ -458,9 +458,6 @@ let _activeShowFinalBatch=null; // T2I batch: called with an array of {filename,
 let _activeShowTemp=null; // auto-save off: called with array of temp {filename, subfolder, type}
 let _activeSaveNode=null; // auto-save off: id of the current mode's save node (now a PreviewImage)
 let _activeAutoSend=null; // ()=>{} run after a result is shown, to push the image downstream
-let _activeBatchN=1; // batch size SNAPSHOTTED at Generate-click time — the completion handler
-                     // must use this, not the live S.batchCount, so changing the ×N dropdown
-                     // mid-run can't mis-route the result set (drop/mis-slice fresh images).
 
 // Registry of all live FluxKlein nodes, keyed by graph id (kept for cleanup on remove).
 const _fkNodes = {};
@@ -656,9 +653,11 @@ function _oneNodeChainForward(srcId){
               if(x&&x.filename&&x.type==="output"&&(x.subfolder||"").startsWith("one-node-flux-2-klein")) outs.push(x);
             }
           }
-          const batchN=Math.max(1,Math.min(4,+_activeBatchN||1));
-          if(batchN>1 && _activeShowFinalBatch && outs.length>1){
-            _activeShowFinalBatch(outs.slice(0,batchN).map(v=>({filename:v.filename,subfolder:v.subfolder||""})));
+          // Route on the ACTUAL number of images this run produced (outs is already
+          // filtered to this prompt_id). A batch must go through the batch handler so
+          // every image gets its metadata saved — the single handler saves only outs[0].
+          if(outs.length>1 && _activeShowFinalBatch){
+            _activeShowFinalBatch(outs.map(v=>({filename:v.filename,subfolder:v.subfolder||""})));
             _activeAutoSend?.();
             return;
           }
@@ -676,13 +675,11 @@ function _oneNodeChainForward(srcId){
       const prev=_activeS?._preRunFiles||new Set();
       const all=(d.images||d.videos||[]);
       const fresh=all.filter(v=>!prev.has(v.key||((v.subfolder?`${v.subfolder}/`:"")+v.filename)));
-      // Use the batch size snapshotted at Generate time, NOT the live dropdown value — the
-      // user may have changed ×N mid-run, which would otherwise drop or mis-slice fresh images.
-      const batchN=Math.max(1,Math.min(4,+_activeBatchN||1));
-      // Batch (>1): hand the whole set of new images to the batch handler.
-      if(batchN>1 && _activeShowFinalBatch && fresh.length){
+      // Batch (>1): route on the ACTUAL number of fresh images this run produced, so a
+      // real batch always reaches the batch handler (which saves metadata for every image).
+      if(fresh.length>1 && _activeShowFinalBatch){
         // Gallery returns newest first; reverse so the batch is shown in generation order.
-        const batch=fresh.slice(0,batchN).reverse().map(v=>({filename:v.filename,subfolder:v.subfolder||""}));
+        const batch=fresh.slice().reverse().map(v=>({filename:v.filename,subfolder:v.subfolder||""}));
         _activeShowFinalBatch(batch);
         _activeAutoSend?.();
         return;
@@ -10025,10 +10022,6 @@ ${base}`;
         // and routed there (see _maskName==="__outpaint__" handling), so it hits the same
         // single-stitcher limit — InpaintStitchImproved handles one stitcher/image only.
         const _batchN=()=>(isInpaintMode||isOutpaintMode)?1:Math.max(1,Math.min(4,+S.batchCount||1));
-        // Snapshot the batch size actually used for THIS submission, so the completion handler
-        // routes the result set by this value rather than the live S.batchCount (which the user
-        // may change mid-run).
-        _activeBatchN=_batchN();
         const _applyBatchEmpty=(latentId)=>{ set(latentId,"batch_size",_batchN()); };
         const _applyBatchRepeat=(samplerId,latentInputKey)=>{
           const n=_batchN();
