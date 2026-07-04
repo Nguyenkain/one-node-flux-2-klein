@@ -596,6 +596,7 @@ async def get_config(request):
         "t2i_templates": cfg.get("t2i_templates", []),
         "discover_prompts": cfg.get("discover_prompts", {}),
         "autofill_prompts": cfg.get("autofill_prompts", {}),
+        "settings_presets": cfg.get("settings_presets", {}),
     })
 
 

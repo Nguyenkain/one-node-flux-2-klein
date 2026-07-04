@@ -46,7 +46,7 @@ const WFK = {
   promptPos:  "KREA:POS",
   promptNeg:  "KREA:NEGBASE",
   negZero:    "KREA:NEG",
-  rebalance:  "KREA:REB",
+  enhancer:   "KREA:ENH",
   latent:     "KREA:LATENT",
   sampler:    "KREA:KS",
   decode:     "KREA:DECODE",
@@ -61,7 +61,7 @@ const WFKI2I = {
   promptPos:  "KREAI2I:POS",
   promptNeg:  "KREAI2I:NEGBASE",
   negZero:    "KREAI2I:NEG",
-  rebalance:  "KREAI2I:REB",
+  enhancer:   "KREAI2I:ENH",
   sampler:    "KREAI2I:KS",
   decode:     "KREAI2I:DECODE",
   saveImage:  "KREAI2I:SAVE",
@@ -639,8 +639,8 @@ app.registerExtension({
           kreaTextEncoder: saved.kreaTextEncoder||"",
           kreaVae:      saved.kreaVae||"",
           kreaPromptMode: saved.kreaPromptMode||"plain",
-          kreaRebalanceMultiplier: saved.kreaRebalanceMultiplier!==undefined?saved.kreaRebalanceMultiplier:2,
-          kreaRebalanceBypass: saved.kreaRebalanceBypass||false,
+          kreaEnhancerStrength: saved.kreaEnhancerStrength!==undefined?saved.kreaEnhancerStrength:1.5,
+          kreaEnhancerEnabled: saved.kreaEnhancerEnabled!==undefined?saved.kreaEnhancerEnabled:true,
           kreaBuilder:  saved.kreaBuilder||{highLevelDescription:"",background:"",style:"photo",stylePhoto:"",aesthetics:"",lighting:"",medium:"",importMode:"when empty"},
           // Pill mode
           pill:         saved.pill||"t2i",              // "t2i" | "edit" | "inpaint" | "faceswap"
@@ -743,16 +743,23 @@ app.registerExtension({
         S[_initKey]=S.prompt;
       }
       let soundEnabled=S.soundEnabled;
+      const _persistableKreaBuilder=(b={})=>{
+        const {ideogramState,...rest}=b||{};
+        return rest;
+      };
 
-      const persist=()=>{
+      const _cloneJson=(v)=>{
+        try{return JSON.parse(JSON.stringify(v));}catch(_){return v;}
+      };
+      const _collectPersistState=()=>{
         S.soundEnabled=soundEnabled;
         _stashCurrentUserLoras();
-        saveState({
+        return {
           modelVariant:S.modelVariant, modelFamily:S.modelFamily,
           model:S.model, textEncoder:S.textEncoder, vae:S.vae,
           kreaModel:S.kreaModel, kreaTextEncoder:S.kreaTextEncoder, kreaVae:S.kreaVae,
-          kreaPromptMode:S.kreaPromptMode, kreaRebalanceMultiplier:S.kreaRebalanceMultiplier,
-          kreaRebalanceBypass:S.kreaRebalanceBypass, kreaBuilder:S.kreaBuilder,
+          kreaPromptMode:S.kreaPromptMode, kreaEnhancerStrength:S.kreaEnhancerStrength,
+          kreaEnhancerEnabled:S.kreaEnhancerEnabled, kreaBuilder:_persistableKreaBuilder(S.kreaBuilder),
           pill:S.pill,
           resLabel:S.resLabel, resW:S.resW, resH:S.resH,
           isCustomRes:S.isCustomRes, customW:S.customW, customH:S.customH,
@@ -767,11 +774,12 @@ app.registerExtension({
           promptPaint:S.promptPaint, promptFs:S.promptFs, promptI2i:S.promptI2i, promptLLM:S.promptLLM, promptPose:S.promptPose,
           llmModel:S.llmModel, llmMmproj:S.llmMmproj, llmSystemPromptFile:S.llmSystemPromptFile, llmImage:S.llmImage, llmResult:S.llmResult,
           i2iImage:S.i2iImage, i2iDenoise:S.i2iDenoise, i2iResizeLonger:S.i2iResizeLonger,
-          userLorasByFamily:S.userLorasByFamily, userLoras:S.userLoras, soundEnabled, extLoaders:S.extLoaders,
+          userLorasByFamily:_cloneJson(S.userLorasByFamily), userLoras:_cloneJson(S.userLoras), soundEnabled, extLoaders:S.extLoaders,
           downscaleRef:S.downscaleRef, downscaleRefMP:S.downscaleRefMP,
           layoutMode:S.layoutMode, opFeather:S.opFeather,
-        });
+        };
       };
+      const persist=()=>saveState(_collectPersistState());
 
       // getW/getH: 0 = "use image size via GetImageSize node", otherwise explicit pixels
       const getW=()=>{
@@ -1039,10 +1047,11 @@ app.registerExtension({
       let _refreshKreaCtrlBar=null;
       // Row 0: Model family — own row, full width, kept separate so it never breaks the model grid layout
       const familyRow=mk("div",{marginBottom:"10px"});
-      const familyF =mkModDD("Model family",  "Switch the whole pipeline between Flux and Krea", S.modelFamily, v=>{
-        const nextFamily=v||"flux";
-        if(nextFamily!==S.modelFamily) _stashCurrentUserLoras();
-        S.modelFamily=nextFamily;
+      // Switch the whole pipeline family. Reused by the dropdown and by gallery "Load settings".
+      const _setModelFamily=(next)=>{
+        next=next||"flux";
+        if(next!==S.modelFamily) _stashCurrentUserLoras();
+        S.modelFamily=next;
         _loadFamilyUserLoras(S.modelFamily);
         if(typeof _ulRebuildRows==="function") _ulRebuildRows();
         if(typeof _ulSyncSlotsToModels==="function") _ulSyncSlotsToModels();
@@ -1051,9 +1060,11 @@ app.registerExtension({
         if(typeof _applyModelFamilyUI==="function") _applyModelFamilyUI();
         if(_refreshPromptModeUI) _refreshPromptModeUI();
         if(_refreshKreaCtrlBar) _refreshKreaCtrlBar();
+        if(familyF&&familyF.dd) familyF.dd.set(S.modelFamily);
         persist();
         _loadModels();
-      },"");
+      };
+      const familyF =mkModDD("Model family",  "Switch the whole pipeline between Flux and Krea", S.modelFamily, v=>_setModelFamily(v||"flux"),"");
       familyF.dd.updateItems(["flux","krea"]); familyF.dd.set(S.modelFamily||"flux");
       familyRow.append(familyF.wrap);
       // Row 1: Model / Text Encoder / VAE
@@ -1305,7 +1316,114 @@ app.registerExtension({
         _kvNote.style.display=!isKrea&&(S.model||"").toLowerCase().includes("kv")?"block":"none";
         _baseNote.style.display=!isKrea&&(S.model||"").toLowerCase().includes("base")?"block":"none";
       };
-      settingsOverlay.append(settHdr,familyRow,modGrid,kreaModelGrid,_kvNote,_baseNote,modGrid2,modGrid3,llmTitle,modGridLLM,prefTitle,soundToggle.el,advUIToggle.el,extLoadersToggle.el,_dsRow);
+
+      // ── Settings Presets ────────────────────────────────────────────────────
+      // Save the whole current settings state under a name, then load/overwrite/
+      // delete later. Stored in the ComfyUI user config (settings_presets key) so
+      // presets survive browser clears and ComfyUI restarts. Assigned near the end
+      // of _buildUI once every control exists, so it can sync the whole UI on load.
+      let _applyPresetToUI=null;
+      let _presets={}; // name -> { updatedAt, state }
+      const _presetSect=mk("div",{display:"flex",flexDirection:"column",gap:"7px",
+        padding:"9px 0",borderBottom:`1px solid ${C.border}`,marginBottom:"4px"});
+      const _presetTitle=mk("div",{fontSize:"10px",fontWeight:"700",letterSpacing:".1em",
+        textTransform:"uppercase",color:C.muted});
+      tx(_presetTitle,"Settings Presets");
+      const _presetTopRow=mk("div",{display:"flex",gap:"6px",alignItems:"center"});
+      const _presetDDWrap=mk("div",{flex:"1",minWidth:"0"});
+      const _presetDD=DD(["— No presets —"],"— No presets —",v=>{ _presetSelected=v; });
+      _presetDDWrap.appendChild(_presetDD.el);
+      let _presetSelected="";
+      const _presetNameInp=mk("input",{
+        flex:"1",minWidth:"0",height:"28px",background:C.bg2,border:`1px solid ${C.border}`,
+        borderRadius:"6px",boxSizing:"border-box",padding:"0 8px",color:C.text,
+        fontSize:"11px",outline:"none",transition:"border-color .15s",
+      },{type:"text",placeholder:"Preset name…"});
+      _presetNameInp.onfocus=()=>_presetNameInp.style.borderColor=LIME;
+      _presetNameInp.onblur=()=>_presetNameInp.style.borderColor=C.border;
+      _presetTopRow.append(_presetDDWrap,_presetNameInp);
+      const _presetBtnRow=mk("div",{display:"flex",gap:"6px",alignItems:"center"});
+      const _mkPresetBtn=(label,color)=>{
+        const b=mk("button",{background:"transparent",border:`1px solid ${color}`,
+          borderRadius:"6px",padding:"4px 12px",fontSize:"11px",color,cursor:"pointer",
+          outline:"none",transition:"opacity .15s",flexShrink:"0"});
+        tx(b,label);
+        b.onmouseenter=()=>b.style.opacity=".7";
+        b.onmouseleave=()=>b.style.opacity="1";
+        return b;
+      };
+      const _presetSaveBtn=_mkPresetBtn("Save current",LIME);
+      const _presetLoadBtn=_mkPresetBtn("Load",C.text);
+      const _presetDelBtn=_mkPresetBtn("Delete","#e05555");
+      const _presetStatus=mk("div",{fontSize:"9px",color:C.muted,minHeight:"12px",lineHeight:"1.3"});
+      _presetBtnRow.append(_presetSaveBtn,_presetLoadBtn,_presetDelBtn);
+      _presetSect.append(_presetTitle,_presetTopRow,_presetBtnRow,_presetStatus);
+
+      const _presetStatusMsg=(msg,isErr)=>{
+        tx(_presetStatus,msg||"");
+        _presetStatus.style.color=isErr?"#e05555":C.muted;
+      };
+      const _presetNames=()=>Object.keys(_presets).sort((a,b)=>a.localeCompare(b));
+      const _refreshPresetDD=()=>{
+        const names=_presetNames();
+        if(names.length){
+          _presetDD.updateItems(names);
+          if(!names.includes(_presetSelected)){ _presetSelected=names[0]; _presetDD.set(names[0]); }
+          else _presetDD.set(_presetSelected);
+        } else {
+          _presetSelected="";
+          _presetDD.updateItems(["— No presets —"]);
+          _presetDD.set("— No presets —");
+        }
+      };
+      const _savePresetsRemote=async()=>{
+        try{
+          await api.fetchApi("/flux_klein/config",{
+            method:"POST",headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({settings_presets:_presets}),
+          });
+          return true;
+        }catch(e){ console.warn("[FluxKlein] save presets:",e); return false; }
+      };
+      const _loadPresetsRemote=async()=>{
+        try{
+          const r=await api.fetchApi("/flux_klein/config");
+          const d=await r.json();
+          _presets=(d&&typeof d.settings_presets==="object"&&d.settings_presets)||{};
+        }catch(e){ _presets={}; }
+        _refreshPresetDD();
+      };
+      _presetSaveBtn.onclick=async()=>{
+        const name=(_presetNameInp.value||_presetSelected||"").trim();
+        if(!name){ _presetStatusMsg("Enter a preset name first.",true); _presetNameInp.focus(); return; }
+        _presets[name]={updatedAt:Date.now(),state:_cloneJson(_collectPersistState())};
+        _presetSelected=name;
+        _refreshPresetDD();
+        const ok=await _savePresetsRemote();
+        _presetNameInp.value="";
+        _presetStatusMsg(ok?`Saved "${name}".`:`Saved "${name}" locally (config write failed).`,!ok);
+      };
+      _presetLoadBtn.onclick=()=>{
+        const name=_presetSelected;
+        if(!name||!_presets[name]){ _presetStatusMsg("Select a preset to load.",true); return; }
+        if(!confirm(`Load preset "${name}"? This replaces your current settings.`)) return;
+        try{
+          _applyPresetToUI?.(_presets[name].state);
+          _presetStatusMsg(`Loaded "${name}".`);
+        }catch(e){ console.warn("[FluxKlein] load preset:",e); _presetStatusMsg("Load failed — see console.",true); }
+      };
+      _presetDelBtn.onclick=async()=>{
+        const name=_presetSelected;
+        if(!name||!_presets[name]){ _presetStatusMsg("Select a preset to delete.",true); return; }
+        if(!confirm(`Delete preset "${name}"? This cannot be undone.`)) return;
+        delete _presets[name];
+        _refreshPresetDD();
+        const ok=await _savePresetsRemote();
+        _presetStatusMsg(ok?`Deleted "${name}".`:`Deleted "${name}" locally (config write failed).`,!ok);
+      };
+      _loadPresetsRemote();
+
+      settingsOverlay.append(settHdr,_presetSect,familyRow,modGrid,kreaModelGrid,_kvNote,_baseNote,modGrid2,modGrid3,llmTitle,modGridLLM,prefTitle,soundToggle.el,advUIToggle.el,extLoadersToggle.el,_dsRow);
       _applyModelFamilyUI();
 
       // ── Overlay helpers ───────────────────────────────────────────────────
@@ -8580,6 +8698,26 @@ ${base}`;
       promptHdr.appendChild(_kreaPbToggle);
 
       let _kreaPbNodeId=null;
+      // After a ComfyUI restart the real PB node is restored on the graph, but this
+      // closure starts fresh with _kreaPbNodeId=null. Re-adopt the orphan tagged with
+      // our owner id so toggling reuses it instead of spawning a duplicate.
+      const _adoptExistingPbNode=()=>{
+        if(_kreaPbNodeId) return _kreaPbNodeId;
+        try{
+          const nodes=(app.graph?._nodes)||[];
+          const isPb=n=>n&&(n.type==="Ideogram4PromptBuilderKJ"||n.comfyClass==="Ideogram4PromptBuilderKJ");
+          let mine=nodes.find(n=>isPb(n)&&n.properties?.fkOwnerId===self.id);
+          if(!mine){
+            const ourNode=app.graph.getNodeById(self.id);
+            const expectedX=(ourNode?.pos?.[0]||0)-1100, expectedY=(ourNode?.pos?.[1]||0)-100;
+            const candidates=nodes.filter(n=>isPb(n)&&!n.properties?.fkOwnerId);
+            if(candidates.length===1) mine=candidates[0];
+            else mine=candidates.map(n=>({n,d:Math.hypot((n.pos?.[0]||0)-expectedX,(n.pos?.[1]||0)-expectedY)})).sort((a,b)=>a.d-b.d)[0]?.n;
+          }
+          if(mine){ mine.properties=mine.properties||{}; mine.properties.fkOwnerId=self.id; _kreaPbNodeId=mine.id; return mine.id; }
+        }catch(_){}
+        return null;
+      };
       const _syncPbNodeRes=()=>{
         if(!_kreaPbNodeId) return;
         try{
@@ -8600,17 +8738,21 @@ ${base}`;
         if(_refreshKreaCtrlBar) _refreshKreaCtrlBar();
         // Add/remove real Ideogram4PromptBuilderKJ node on canvas
         try{
+          if(showBuilder) _adoptExistingPbNode();
           if(showBuilder&&!_kreaPbNodeId){
             const nodeType="Ideogram4PromptBuilderKJ";
             const pbNode=LiteGraph.createNode(nodeType);
             if(!pbNode){console.warn("[FluxKlein] Prompt Builder KJ node type not found.");return;}
             const ourNode=app.graph.getNodeById(self.id);
             pbNode.pos=[(ourNode?.pos?.[0]||0)-1100, (ourNode?.pos?.[1]||0)-100];
+            pbNode.properties=pbNode.properties||{};
+            pbNode.properties.fkOwnerId=self.id;
             app.graph.add(pbNode);
             try{
               const _applyIdeoEditorHeight=(tries=24)=>{
                 pbNode.size=Array.isArray(pbNode.size)&&pbNode.size.length>=2?[Math.round(pbNode.size[0]),Math.round(pbNode.size[1])]:[560,420];
                 pbNode.properties=pbNode.properties||{};
+                pbNode.properties.fkOwnerId=self.id;
                 pbNode.properties.dockPinned=true;
                 pbNode.properties.dockMin=false;
                 pbNode.properties.dockGraph=pbNode.properties.dockGraph||{x:0,y:(pbNode.size?.[1]||420)+2,w:Math.round(pbNode.size?.[0]||560),h:470};
@@ -8663,15 +8805,24 @@ ${base}`;
         }catch(e){console.warn("[FluxKlein] PB node:",e);}
       };
       promptWrap.append(promptTA,errPanel);
-      _refreshPromptModeUI();
+      // On first build, the saved PB node may not be deserialized onto the graph yet.
+      // Try to adopt it across a few frames before _refreshPromptModeUI can create a duplicate.
+      {
+        const _bootstrapPb=(tries=20)=>{
+          if(_adoptExistingPbNode()||tries<=0){ _refreshPromptModeUI(); return; }
+          requestAnimationFrame(()=>_bootstrapPb(tries-1));
+        };
+        if(S.modelFamily==="krea"&&S.kreaPromptMode==="builder"&&activePill==="t2i") _bootstrapPb();
+        else _refreshPromptModeUI();
+      }
       // ── Krea control bar (below prompt wrap, visible for Krea T2I/I2I) ─────
       const _kreaCtrlBar=mk("div",{display:"none",flexDirection:"column",gap:"6px",marginTop:"4px"});
       const _kreaCtrlBarRow=mk("div",{display:"flex",alignItems:"center",gap:"8px"});
       const _kreaCtrlRebLbl=mk("span",{fontSize:"10px",color:C.muted,fontWeight:"700",letterSpacing:".05em",flexShrink:"0"});
-      tx(_kreaCtrlRebLbl,"Rebalance:");
-      const _kreaCtrlRebInp=NI("",S.kreaRebalanceMultiplier,0,10,0.1,v=>{S.kreaRebalanceMultiplier=v;persist();},"64px");
+      tx(_kreaCtrlRebLbl,"Enhancer:");
+      const _kreaCtrlRebInp=NI("",S.kreaEnhancerStrength,0,2,0.05,v=>{S.kreaEnhancerStrength=v;persist();},"64px");
       _kreaCtrlRebInp._inp.style.color=LIME;_kreaCtrlRebInp._inp.style.fontWeight="700";
-      const _kreaCtrlBypassToggle=Toggle("Bypass rebalance",S.kreaRebalanceBypass||false,v=>{S.kreaRebalanceBypass=v;persist();});
+      const _kreaCtrlBypassToggle=Toggle("Enable enhancer",S.kreaEnhancerEnabled!==false,v=>{S.kreaEnhancerEnabled=v;persist();});
       _kreaCtrlBarRow.append(_kreaCtrlRebLbl,_kreaCtrlRebInp,_kreaCtrlBypassToggle.el);
       _kreaCtrlBar.appendChild(_kreaCtrlBarRow);
       _refreshKreaCtrlBar=()=>{
@@ -8889,6 +9040,50 @@ ${base}`;
         else if(_isOutpaintSnap) _snapMode="outpaint";
         else if(_isFaceswapSnap) _snapMode="faceswap";
         else _snapMode=activePill;
+        // Krea Prompt Builder snapshot — read live PB node widgets if present, else saved state
+        const _kreaBuilderSnap=(()=>{
+          if(!(S.modelFamily==="krea"&&activePill==="t2i"&&S.kreaPromptMode==="builder")) return null;
+          let b={...(S.kreaBuilder||{})};
+          if(_kreaPbNodeId){
+            const pbNode=app.graph.getNodeById(_kreaPbNodeId);
+            if(pbNode){
+              const ww=pbNode.widgets||[],get=(n)=>{const w=ww.find(x=>x.name===n);return w?w.value:undefined;};
+              const getJson=(n,fallback)=>{try{const v=get(n);return v?JSON.parse(v):fallback;}catch(_){return fallback;}};
+              b={
+                width:+(get("width"))||b.width, height:+(get("height"))||b.height,
+                highLevelDescription:get("high_level_description")??b.highLevelDescription,
+                background:get("background")??b.background,
+                style:get("style")||b.style||"photo",
+                stylePhoto:get("style.photo")??b.stylePhoto,
+                aesthetics:get("aesthetics")??b.aesthetics,
+                lighting:get("lighting")??b.lighting,
+                medium:get("medium")??b.medium,
+                importMode:get("import_mode")||b.importMode||"when empty",
+                ideogramState:{
+                  boxes:Array.isArray(pbNode._boxes)?JSON.parse(JSON.stringify(pbNode._boxes)):getJson("elements_data",[]),
+                  palette:Array.isArray(pbNode._stylePalette)?pbNode._stylePalette.slice():getJson("style_palette_data",[]),
+                  importMode:get("import_mode")||"when empty",
+                  outputFormat:get("output_format")||"compact",
+                  coordMode:get("coord_mode")||"normalized",
+                  bboxOrder:get("bbox_order")||"yx",
+                  properties:{
+                    guide:pbNode.properties?.guide||"none",
+                    gridSize:pbNode.properties?.gridSize,
+                    snap:pbNode.properties?.snap,
+                    guideColor:pbNode.properties?.guideColor,
+                    guideOpacity:pbNode.properties?.guideOpacity,
+                    showBoxText:pbNode.properties?.showBoxText,
+                    textStroke:pbNode.properties?.textStroke,
+                    textAutoPlace:pbNode.properties?.textAutoPlace,
+                    textSize:pbNode.properties?.textSize,
+                    boxOpacity:pbNode.properties?.boxOpacity,
+                  },
+                },
+              };
+            }
+          }
+          return b;
+        })();
         S._pendingMeta={
           prompt:S.prompt,
           w:getEffectiveW(), h:getEffectiveH(),
@@ -8903,6 +9098,7 @@ ${base}`;
           ...(S.advancedUI?{steps:S.steps||4, cfg:S.cfg!==undefined?S.cfg:1,
             sampler:S.sampler||"er_sde", scheduler:S.scheduler||"simple",
             advancedUI:true}:{}),
+          ...(_kreaBuilderSnap?{modelFamily:"krea",kreaPromptMode:"builder",kreaBuilder:_kreaBuilderSnap}:{}),
           seed:S.seed||0, randomizeSeed:S.randomizeSeed,
         };
 
@@ -9109,17 +9305,13 @@ ${base}`;
           set(W.promptNeg,"text",DEFAULT_NEG_PROMPT);
           set(W.save,"filename_prefix","one-node-flux-2-klein/krea");
 
-          // Rebalance multiplier / bypass
-          set(W.rebalance,"multiplier",+(S.kreaRebalanceMultiplier)||0);
-          if(S.kreaRebalanceBypass){
-            // Bypass: feed positive conditioning straight into the sampler, drop rebalance node
-            prompt[W.sampler].inputs.positive=[W.promptPos,0];
-            delete prompt[W.rebalance];
-          }
+          // Krea2T Enhancer (enabled toggle + strength) — model patcher in the chain
+          set(W.enhancer,"enabled",S.kreaEnhancerEnabled!==false);
+          set(W.enhancer,"strength",+(S.kreaEnhancerStrength)||0);
+          prompt[W.enhancer].inputs.model=extModel||[W.model,0];
 
-          // Model chain → LoRAs → sampler
-          const kreaModelSrc=extModel||W.model;
-          const kreaFinalRef=_applyLoRAs(kreaModelSrc,isI2IMode?"KREAI2I:":"KREA:");
+          // Model chain: (ext|UNet) → Enhancer → LoRAs → sampler
+          const kreaFinalRef=_applyLoRAs([W.enhancer,0],isI2IMode?"KREAI2I:":"KREA:");
           set(W.sampler,"model",typeof kreaFinalRef==="string"?[kreaFinalRef,0]:kreaFinalRef);
 
           // Prompt — Prompt Builder KJ (T2I only) or raw text
@@ -10332,6 +10524,14 @@ ${base}`;
           // Map meta.mode → pill name
           const pillMap={"sketch":"inpaint","outpaint":"inpaint","inpaint":"inpaint","edit":"edit","i2i":"i2i","faceswap":"faceswap","t2i":"t2i"};
           const pill=pillMap[mode]||"t2i";
+          // Model family — switch first so the right pipeline/controls are live before pill+prompt
+          if(meta.modelFamily&&meta.modelFamily!==S.modelFamily) _setModelFamily(meta.modelFamily);
+          // Krea Prompt Builder — restore mode + builder widget state
+          if(meta.modelFamily==="krea"&&meta.kreaPromptMode&&meta.kreaBuilder){
+            S.kreaPromptMode=meta.kreaPromptMode;
+            S.kreaBuilder={...(S.kreaBuilder||{}),...meta.kreaBuilder};
+            _kreaPbUpdateToggle?.(S.kreaPromptMode==="builder");
+          }
           // Prompt
           if(meta.prompt){
             S.prompt=meta.prompt; S[_pillPromptKey(pill)]=meta.prompt;
@@ -10339,6 +10539,40 @@ ${base}`;
           }
           // Pill
           setPill(pill);
+          // Push restored builder values into the live PB node (handles the already-existing node case)
+          if(meta.modelFamily==="krea"&&meta.kreaBuilder&&S.kreaPromptMode==="builder"){
+            _refreshPromptModeUI?.();
+            const _applyBuilderToNode=(tries=20)=>{
+              if(!_kreaPbNodeId){ if(tries>0) requestAnimationFrame(()=>_applyBuilderToNode(tries-1)); return; }
+              const pbNode=app.graph.getNodeById(_kreaPbNodeId);
+              if(!pbNode){ if(tries>0) requestAnimationFrame(()=>_applyBuilderToNode(tries-1)); return; }
+              const b=S.kreaBuilder||{},ideo=b.ideogramState||{},ww=pbNode.widgets||[],setW=(n,v)=>{const w=ww.find(x=>x.name===n);if(w&&v!==undefined&&v!=="")w.value=v;};
+              const setRawW=(n,v)=>{const w=ww.find(x=>x.name===n);if(w&&v!==undefined)w.value=v;};
+              setW("width",+(b.width)||undefined); setW("height",+(b.height)||undefined);
+              setW("high_level_description",b.highLevelDescription); setW("background",b.background);
+              setW("style",b.style||"photo"); setW("style.photo",b.stylePhoto);
+              setW("aesthetics",b.aesthetics); setW("lighting",b.lighting); setW("medium",b.medium);
+              setW("import_mode",b.importMode||ideo.importMode||"when empty");
+              if(ideo&&typeof ideo==="object"){
+                if(Array.isArray(ideo.boxes)) setRawW("elements_data",ideo.boxes.length?JSON.stringify(ideo.boxes):"");
+                if(Array.isArray(ideo.palette)) setRawW("style_palette_data",ideo.palette.length?JSON.stringify(ideo.palette):"");
+                setRawW("output_format",ideo.outputFormat||"compact");
+                setRawW("coord_mode",ideo.coordMode||"normalized");
+                setRawW("bbox_order",ideo.bboxOrder||"yx");
+                if(ideo.properties) Object.assign(pbNode.properties=pbNode.properties||{},ideo.properties);
+                try{
+                  const cfg=pbNode.serialize?pbNode.serialize():{};
+                  cfg.ideo={boxes:Array.isArray(ideo.boxes)?ideo.boxes:[],palette:Array.isArray(ideo.palette)?ideo.palette:[],importMode:b.importMode||ideo.importMode||"when empty",outputFormat:ideo.outputFormat||"compact",coordMode:ideo.coordMode||"normalized",bboxOrder:ideo.bboxOrder||"yx",dock:cfg.ideo?.dock};
+                  pbNode.configure?.(cfg);
+                }catch(e){
+                  if(Array.isArray(ideo.boxes)) pbNode._boxes=JSON.parse(JSON.stringify(ideo.boxes));
+                  if(Array.isArray(ideo.palette)) pbNode._stylePalette=ideo.palette.slice();
+                }
+              }
+              pbNode.setDirtyCanvas?.(true,true);
+            };
+            _applyBuilderToNode();
+          }
           // Resolution (T2I / Edit only)
           if(meta.w&&meta.h&&(pill==="t2i"||pill==="edit")){
             const preset=RES_PRESETS.find(r=>r.w===meta.w&&r.h===meta.h);
@@ -10380,19 +10614,19 @@ ${base}`;
             S.randomizeSeed=false; S.seed=meta.seed;
             seedInp.setVal(meta.seed); _advSeedInp.setVal(meta.seed); _advSeedRefresh();
           }
-          // LoRAs — restore into current family bucket only
-          const _metaLoraCount=Array.isArray(meta.userLoras)?meta.userLoras.length:0;
-          const _wantSlots=Math.min(_UL_MAX,Math.max(_UL_DEFAULT,_metaLoraCount));
-          while(S.userLoras.length<_wantSlots) S.userLoras.push(_emptyUserLora());
-          if(S.userLoras.length>_wantSlots) S.userLoras.length=_wantSlots;
-          S.userLoras=S.userLoras.map(_normUserLora);
-          _ulRebuildRows();
-          _ulRowEls.forEach((r,i)=>{
-            S.userLoras[i]=_emptyUserLora();
-            S.userLoras[i].strength=0;
-            r._reset();
-          });
+          // LoRAs — restore into current family bucket only when metadata contains LoRAs and model list is ready.
+          // Otherwise leave the user's current LoRA list untouched; older/no-LoRA metadata should not erase it.
           if(Array.isArray(meta.userLoras)&&meta.userLoras.length&&_loraList.length){
+            const _wantSlots=Math.min(_UL_MAX,Math.max(_UL_DEFAULT,meta.userLoras.length));
+            while(S.userLoras.length<_wantSlots) S.userLoras.push(_emptyUserLora());
+            if(S.userLoras.length>_wantSlots) S.userLoras.length=_wantSlots;
+            S.userLoras=S.userLoras.map(_normUserLora);
+            _ulRebuildRows();
+            _ulRowEls.forEach((r,i)=>{
+              S.userLoras[i]=_emptyUserLora();
+              S.userLoras[i].strength=0;
+              r._reset();
+            });
             const nd=(s)=>(s||"").replace(/\\/g,"/").toLowerCase();
             const loraOpts=["none",..._loraList];
             meta.userLoras.forEach((ul,i)=>{
@@ -10406,9 +10640,9 @@ ${base}`;
                 _ulRowEls[i]._refreshTrig(match); _ulRowEls[i]._applyEnabled();
               }
             });
+            _stashCurrentUserLoras();
+            _ulUpdateBtn();
           }
-          _stashCurrentUserLoras();
-          _ulUpdateBtn();
           updateSizeControls(); persist();
         }catch(err){
           console.warn("[FluxKlein] _lbApplyMeta error:",err);
@@ -11160,6 +11394,82 @@ ${base}`;
         }
       }
       _refreshExtInputUI();
+
+      // ── Apply a saved preset back into S + the whole Settings/UI ────────────
+      // Assigned here (end of _buildUI) so every control the preset touches
+      // already exists. Mirrors the persisted schema in _collectPersistState().
+      _applyPresetToUI=(st)=>{
+        if(!st||typeof st!=="object") return;
+        const KEYS=["modelVariant","modelFamily","model","textEncoder","vae",
+          "kreaModel","kreaTextEncoder","kreaVae","kreaPromptMode","kreaEnhancerStrength","kreaEnhancerEnabled",
+          "pill","resLabel","resW","resH","isCustomRes","customW","customH","useSizeFromImage1",
+          "randomizeSeed","seed","advancedUI","steps","cfg","sampler","scheduler","denoise",
+          "image1Name","image2Name","fsTarget","fsSource","fsLora","fsResizeLonger","bgRemovalModel","seedvr2Model","upscaleModel",
+          "poseImage","poseRef","poseLora","poseUseSizeSource","poseResizeLonger",
+          "prompt","promptT2i","promptEdit","promptPaint","promptFs","promptI2i","promptLLM","promptPose",
+          "llmModel","llmMmproj","llmSystemPromptFile","llmImage","llmResult",
+          "i2iImage","i2iDenoise","i2iResizeLonger","extLoaders","downscaleRef","downscaleRefMP","layoutMode","opFeather"];
+        KEYS.forEach(k=>{ if(st[k]!==undefined) S[k]=st[k]; });
+        if(st.kreaBuilder) S.kreaBuilder={...(S.kreaBuilder||{}),..._cloneJson(st.kreaBuilder)};
+        if(st.userLorasByFamily) S.userLorasByFamily=_normalizeUserLorasByFamily(_cloneJson(st.userLorasByFamily));
+        _loadFamilyUserLoras(S.modelFamily);
+        // Preferences toggles
+        soundEnabled=S.soundEnabled=(st.soundEnabled!==undefined?st.soundEnabled:soundEnabled);
+        soundToggle._setChecked(soundEnabled);
+        advUIToggle._setChecked(!!S.advancedUI);
+        extLoadersToggle._setChecked(!!S.extLoaders);
+        // Downscale (custom toggle)
+        _dsTrack.style.background=S.downscaleRef?LIME:C.dim;
+        _dsThumb.style.left=S.downscaleRef?"16px":"2px";
+        _dsThumb.style.background=S.downscaleRef?"#111":"#888";
+        _dsMP.value=String(S.downscaleRefMP);
+        _dsApplyEnabled();
+        // Model family
+        familyF.dd.set(S.modelFamily||"flux");
+        _applyModelFamilyUI();
+        // Krea enhancer controls
+        _kreaCtrlRebInp.setVal(S.kreaEnhancerStrength);
+        _kreaCtrlBypassToggle._setChecked(S.kreaEnhancerEnabled!==false);
+        if(_refreshKreaCtrlBar) _refreshKreaCtrlBar();
+        // Resolution
+        if(S.isCustomRes){ resDD.set("Custom…"); customResRow.style.display="flex"; wInp.setVal(S.customW); hInp.setVal(S.customH); }
+        else { resDD.set(S.resLabel); customResRow.style.display="none"; }
+        // Advanced params + seed
+        stepsInp.setVal(S.steps); cfgInp.setVal(S.cfg);
+        samplerDD.set(S.sampler); schedulerDD.set(S.scheduler);
+        seedInp.setVal(S.seed||0); _advSeedInp.setVal(S.seed||0); _advSeedRefresh();
+        if(_advRefresh) _advRefresh();
+        // LLM + post-processing dropdowns
+        llmModelF.dd.set(S.llmModel||"none"); llmMmprojF.dd.set(S.llmMmproj||"none"); llmSysPF.dd.set(S.llmSystemPromptFile||"none");
+        seedvrF.dd.set(S.seedvr2Model||"none"); upscaleF.dd.set(S.upscaleModel||"none"); bgF.dd.set(S.bgRemovalModel||"none");
+        // Layout
+        _applyLayout(S.layoutMode); _setLayoutBtnIcon();
+        // Size source flag
+        _useSizeSource=S.useSizeFromImage1?"img1":null;
+        // LoRA rows
+        if(typeof _ulRebuildRows==="function") _ulRebuildRows();
+        if(typeof _ulSyncSlotsToModels==="function") _ulSyncSlotsToModels();
+        if(typeof _ulUpdateBtn==="function") _ulUpdateBtn();
+        // Image slots
+        img1Slot._restorePreview(S.image1Name||null);
+        img2Slot._restorePreview(S.image2Name||null);
+        i2iSlot._restorePreview(S.i2iImage||null);
+        _fsTargetSlot._restorePreview(S.fsTarget||null);
+        _fsSourceSlot._restorePreview(S.fsSource||null);
+        _poseImgSlot._restorePreview(S.poseImage||null);
+        _poseRefSlot._restorePreview(S.poseRef||null);
+        _i2iSliderSet(Math.round((S.i2iDenoise??0.75)*100));
+        // Re-pick model/lora/faceswap/pose dropdowns from the restored S values
+        _loadModels();
+        // Prompt textarea + mode
+        if(_refreshPromptModeUI) _refreshPromptModeUI();
+        if(_promptTARef){ _promptTARef.value=S.prompt||""; if(typeof _promptOvTA!=="undefined"&&_promptOvTA) _promptOvTA.value=S.prompt||""; }
+        // External loaders + pill + size
+        _applyExtLoaders(!!S.extLoaders); _refreshExtInputUI();
+        setPill(S.pill||"t2i");
+        updateSizeControls();
+        persist();
+      };
 
       // Auto-refresh Settings dropdowns when connections change
       self.onConnectionsChange=function(){ _refreshExtInputUI(); };

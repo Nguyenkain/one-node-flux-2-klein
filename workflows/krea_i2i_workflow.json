@@ -39,14 +39,15 @@
     "class_type": "ConditioningZeroOut",
     "_meta": { "title": "Krea I2I Negative Zero" }
   },
-  "KREAI2I:REB": {
+  "KREAI2I:ENH": {
     "inputs": {
-      "conditioning": ["KREAI2I:POS", 0],
-      "multiplier": 2,
-      "per_layer_weights": "1.0,1.0,1.0,1.0,1.0,1.0,1.0,2.5,5.0,1.1,4.0,1.0"
+      "model": ["KREAI2I:MODEL", 0],
+      "enabled": true,
+      "strength": 1.5,
+      "debug": false
     },
-    "class_type": "ConditioningKrea2Rebalance",
-    "_meta": { "title": "Krea I2I Rebalance" }
+    "class_type": "ComfyUI-Krea2T-Enhancer",
+    "_meta": { "title": "Krea2T Enhancer" }
   },
   "KREAI2I:KS": {
     "inputs": {
@@ -56,8 +57,8 @@
       "sampler_name": "er_sde",
       "scheduler": "simple",
       "denoise": 0.75,
-      "model": ["KREAI2I:MODEL", 0],
-      "positive": ["KREAI2I:REB", 0],
+      "model": ["KREAI2I:ENH", 0],
+      "positive": ["KREAI2I:POS", 0],
       "negative": ["KREAI2I:NEG", 0],
       "latent_image": ["KREAI2I:VAEENC", 0]
     },
