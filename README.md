@@ -126,6 +126,28 @@ Built with the help of [Claude](https://claude.ai) by Anthropic.
 
 ## Changelog
 
+### July 4, 2026
+
+**Reference-guided inpainting**
+The inpaint editor now has an optional reference image slot in the top right. Drop an image in and the model uses it to fill the masked area, so you can paint an object, an outfit, or a face straight into a specific spot. Everything outside your mask stays untouched. Leave the slot empty and inpaint works exactly as before. You can also paste a reference straight in with Ctrl+V while the editor is open.
+
+**Batch generation**
+Generate up to 4 images in a single run. Works in Text to Image, Image to Image, Edit, Faceswap and Pose. Inpaint and Outpaint run one image at a time, because of how the result is merged back into the original.
+
+**Node output and prompt input**
+The node now has an image output, so your result can flow into the rest of your graph, like an upscaler or any other node. It also has a prompt input, so you can feed it a prompt from another node.
+
+**Set image as output from the gallery**
+Open any image in the gallery and push it to the node's output with the new "Set as output" button.
+
+**Auto-save toggle**
+You can now turn off auto-save. When it's off, results show up as a preview first and you hit Save to keep only the ones you want.
+
+**Canvas-like zoom and pan**
+Scroll to zoom and middle-mouse drag to pan while hovering over the node, just like the rest of the ComfyUI canvas.
+
+---
+
 ### June 26, 2026
 
 **New POSE mode**
