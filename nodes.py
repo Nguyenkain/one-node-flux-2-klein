@@ -769,6 +769,7 @@ def _build_krea_t2i_prompt(data):
     batch = _clamp_int(_payload_get(data, "batch", "Batch", "batch_size", default=batch_default), batch_default, 1, 16)
     cfg = _clamp_float(_payload_get(data, "cfg", "CFG", default=cfg_default), cfg_default, 0, 30)
     denoise = _clamp_float(_payload_get(data, "denoise", "Denoise", default=denoise_default), denoise_default, 0, 1)
+    clear_vram = _as_bool(_payload_get(data, "clear_vram", "clearVRAM", "free_memory", "freeMemory", default=True))
     seed = _krea_seed(_payload_get(data, "seed", "Seed", default=-1 if state.get("randomizeSeed", True) else state.get("seed", -1)))
     sampler = str(_payload_get(data, "sampler_name", "sampler", "Sampler", default=state.get("sampler") or "er_sde"))
     scheduler = str(_payload_get(data, "scheduler", "Scheduler", default=state.get("scheduler") or "simple"))
@@ -820,6 +821,7 @@ def _build_krea_t2i_prompt(data):
         "sampler_name": sampler,
         "scheduler": scheduler,
         "denoise": denoise,
+        "clear_vram": clear_vram,
     }
 
 
@@ -988,9 +990,13 @@ async def api_krea_t2i(request):
         if entry:
             status = entry.get("status") or {}
             if status.get("status_str") == "error":
+                if settings.get("clear_vram"):
+                    server.prompt_queue.set_flag("free_memory", True)
                 return web.json_response({"ok": False, "prompt_id": prompt_id, "status": status}, status=500)
             images = _history_images(entry)
             _save_api_metadata(images, settings)
+            if settings.get("clear_vram"):
+                server.prompt_queue.set_flag("free_memory", True)
             return web.json_response({
                 "ok": True,
                 "prompt_id": prompt_id,
@@ -999,6 +1005,8 @@ async def api_krea_t2i(request):
             })
         await asyncio.sleep(0.5)
 
+    if settings.get("clear_vram"):
+        server.prompt_queue.set_flag("free_memory", True)
     return web.json_response({"ok": False, "prompt_id": prompt_id, "error": "generation timed out"}, status=504)
 
 
