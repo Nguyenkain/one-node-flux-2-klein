@@ -4,7 +4,11 @@ import glob
 import time
 import subprocess
 import shutil
+import asyncio
+import uuid
+from urllib.parse import urlencode
 from pathlib import Path
+import execution
 import folder_paths
 from aiohttp import web
 from server import PromptServer
@@ -492,6 +496,512 @@ PromptServer.instance.routes.get("/flux_klein/workflow_seedvr2")(_serve_json("wo
 PromptServer.instance.routes.get("/flux_klein/workflow_ultrasharp")(_serve_json("workflows/ultrasharp_upscale.json"))
 
 
+def _payload_get(data, *keys, default=None):
+    for key in keys:
+        if key in data and data[key] not in (None, ""):
+            return data[key]
+    return default
+
+
+def _clamp_int(value, default, min_value, max_value):
+    try:
+        value = int(value)
+    except Exception:
+        value = default
+    return max(min_value, min(max_value, value))
+
+
+def _clamp_float(value, default, min_value, max_value):
+    try:
+        value = float(value)
+    except Exception:
+        value = default
+    return max(min_value, min(max_value, value))
+
+
+def _krea_seed(value):
+    try:
+        seed = int(value)
+    except Exception:
+        seed = -1
+    if seed < 0:
+        seed = uuid.uuid4().int % (2**63)
+    return seed
+
+
+def _set_workflow_input(prompt, node_id, key, value):
+    node = prompt.get(node_id)
+    if node and isinstance(node.get("inputs"), dict):
+        node["inputs"][key] = value
+
+
+class PresetNotFoundError(ValueError):
+    def __init__(self, preset_name, available_presets):
+        super().__init__(f"preset not found: {preset_name}")
+        self.preset_name = preset_name
+        self.available_presets = available_presets
+
+
+def _settings_presets():
+    presets = _load_config().get("settings_presets") or {}
+    return presets if isinstance(presets, dict) else {}
+
+
+def _preset_state(preset_name):
+    presets = _settings_presets()
+    preset = presets.get(preset_name)
+    if not isinstance(preset, dict):
+        raise PresetNotFoundError(preset_name, sorted(presets.keys()))
+    state = preset.get("state")
+    return state if isinstance(state, dict) else {}
+
+
+def _default_krea_model(state=None):
+    state = state or {}
+    return state.get("kreaModel") or "Krea2_Raw_convrot_int8mixed.safetensors"
+
+
+def _as_bool(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() not in ("0", "false", "no", "off")
+    return bool(value)
+
+
+def _active_loras(data, state):
+    request_loras = data.get("loras")
+    source = request_loras if isinstance(request_loras, list) else state.get("userLoras")
+    loras = []
+    if not isinstance(source, list):
+        return loras
+    for item in source:
+        if not isinstance(item, dict) or item.get("disabled") is True:
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name or name == "none":
+            continue
+        try:
+            strength = float(item.get("strength", 1))
+        except Exception:
+            continue
+        if not (strength == strength) or strength == 0:
+            continue
+        loras.append({"name": name, "strength": _clamp_float(strength, 1, -10, 10)})
+    return loras
+
+
+def _lora_trigger_text(lora_name):
+    cfg = _load_config()
+    custom = (cfg.get("lora_triggers_custom") or {}).get(lora_name)
+    if isinstance(custom, str) and custom.strip():
+        return custom.strip()
+    try:
+        bases = folder_paths.get_folder_paths("loras")
+    except Exception:
+        return ""
+    for base in bases:
+        candidate = os.path.normpath(os.path.join(base, lora_name))
+        try:
+            Path(candidate).resolve().relative_to(Path(base).resolve())
+        except Exception:
+            continue
+        if os.path.isfile(candidate) and candidate.lower().endswith(".safetensors"):
+            triggers = _extract_trigger_words(_read_safetensors_header(candidate))
+            return ", ".join(triggers) if triggers else ""
+    return ""
+
+
+def _prompt_with_lora_triggers(base_prompt, loras):
+    trigger_parts = []
+    for lora in loras:
+        trigger = _lora_trigger_text(lora["name"])
+        if trigger:
+            trigger_parts.append(trigger)
+    if not trigger_parts:
+        return base_prompt
+    prefix = ", ".join(trigger_parts)
+    return f"{prefix}, {base_prompt.strip()}" if base_prompt.strip() else prefix
+
+
+def _apply_krea_loras(prompt, loras):
+    prev = ["KREA:ENH", 0]
+    for index, lora in enumerate(loras, start=1):
+        node_id = f"KREA:UL{index}"
+        prompt[node_id] = {
+            "inputs": {
+                "lora_name": lora["name"],
+                "strength_model": lora["strength"],
+                "model": prev,
+            },
+            "class_type": "LoraLoaderModelOnly",
+            "_meta": {"title": f"User LoRA {index}"},
+        }
+        prev = [node_id, 0]
+    _set_workflow_input(prompt, "KREA:KS", "model", prev)
+
+
+def _build_prompt_enhance_instruction(base_prompt, model_family="flux"):
+    if str(model_family or "").strip().lower() == "krea":
+        return f"""You are an expert prompt engineer for Krea 2.
+
+Expand user's prompt into detailed, production-ready image generation prompt optimized for Krea 2.
+Preserve user's intent, subject, and language if possible. User prompt may be in any language.
+Add concrete visual direction that helps Krea 2 perform better: scene context, environment, lighting, mood, camera framing, lens feel, body pose, facial expression, wardrobe, textures, materials, depth, color palette, atmosphere, and composition.
+Tune enhancement toward Krea-friendly scene clarity with stronger descriptive support for portraits, fashion, and product imagery.
+For portraits and character shots, reinforce identity-safe details like expression, pose, hair, skin texture, eye focus, wardrobe styling, shot type, lens feel, and flattering cinematic lighting.
+For fashion images, reinforce garment silhouette, fabric material, folds, stitching, accessories, runway or editorial posture, styling context, and premium lighting.
+For product images, reinforce product shape, materials, finish, reflections, surface detail, background setup, hero-shot composition, and commercial studio lighting.
+If prompt already specifies details, keep them and refine them instead of replacing them.
+Do not add extra subjects, props, or scene elements unless clearly implied by user's prompt.
+Do not turn prompt into overlong tag spam. Keep it natural, visual, specific, and model-friendly.
+Do not add explanations, markdown, quotes, headings, lists, or commentary.
+Return only final enhanced prompt.
+
+User prompt:
+{base_prompt}"""
+    return f"""You are an expert prompt engineer for FLUX.2 Klein 9B.
+
+Expand user's prompt into detailed, production-ready image generation prompt optimized for FLUX.2 Klein 9B.
+Preserve user's intent and language if possible. User prompt may be in any language.
+Strengthen visual clarity, subject detail, materials, texture, lighting, composition, camera framing, and overall prompt quality while staying faithful to original request.
+Do not add explanations, markdown, quotes, headings, lists, or commentary.
+Return only final enhanced prompt.
+
+User prompt:
+{base_prompt}"""
+
+
+def _prompt_enhance_preset_state(data):
+    preset_name = str(_payload_get(data, "preset", "presets", "Preset", default="KreaRaw")).strip() or "KreaRaw"
+    return preset_name, _preset_state(preset_name)
+
+
+def _preset_payload_get(data, state, *keys, default=None):
+    value = _payload_get(data, *keys, default=None)
+    if value not in (None, ""):
+        return value
+    for key in keys:
+        if key in state and state[key] not in (None, ""):
+            return state[key]
+    return default
+
+
+def _build_prompt_enhance_workflow(data):
+    preset_name, state = _prompt_enhance_preset_state(data)
+    base_prompt = str(_payload_get(data, "prompt", "text", default="")).strip()
+    if not base_prompt:
+        raise ValueError("prompt is required")
+
+    llm_model = str(_preset_payload_get(data, state, "llm_model", "llmModel", "model", default="")).strip()
+    if not llm_model or llm_model == "none":
+        raise ValueError(f"llmModel is not set in preset: {preset_name}")
+
+    model_family = str(_preset_payload_get(data, state, "model_family", "modelFamily", default="flux")).strip() or "flux"
+    instruction = _build_prompt_enhance_instruction(base_prompt, model_family)
+    return {
+        "FK:PE_LLM": {"class_type": "LLMTextProcessor", "inputs": {
+            "model": llm_model,
+            "mmproj": "none",
+            "system_prompt": "none",
+            "prompt": instruction,
+            "max_tokens": _clamp_int(_payload_get(data, "max_tokens", "maxTokens", default=2048), 2048, 1, 8192),
+            "temperature": _clamp_float(_payload_get(data, "temperature", default=0.7), 0.7, 0, 2),
+            "top_p": _clamp_float(_payload_get(data, "top_p", "topP", default=0.8), 0.8, 0, 1),
+            "top_k": _clamp_int(_payload_get(data, "top_k", "topK", default=20), 20, 0, 1000),
+            "repeat_penalty": _clamp_float(_payload_get(data, "repeat_penalty", "repeatPenalty", default=1.0), 1.0, 0, 10),
+            "ctx_size": _clamp_int(_payload_get(data, "ctx_size", "ctxSize", default=8192), 8192, 512, 262144),
+            "memory_mode": "auto",
+            "n_gpu_layers": _clamp_int(_payload_get(data, "n_gpu_layers", "nGpuLayers", default=99), 99, 0, 999),
+            "n_cpu_moe_layers": _clamp_int(_payload_get(data, "n_cpu_moe_layers", "nCpuMoeLayers", default=1), 1, 0, 999),
+            "seed": _clamp_int(_payload_get(data, "seed", default=-1), -1, -1, 2**63 - 1),
+            "timeout_seconds": _clamp_int(_payload_get(data, "timeout_seconds", "timeoutSeconds", default=300), 300, 1, 3600),
+            "reasoning": "off",
+            "enable_processing": True,
+            "extra_args": str(_payload_get(data, "extra_args", "extraArgs", default="")),
+        }},
+        "FK:PE_SHOW": {"class_type": "easy showAnything", "inputs": {"anything": ["FK:PE_LLM", 0]}},
+    }, {"prompt": base_prompt, "preset": preset_name, "model_family": model_family, "llm_model": llm_model}
+
+
+def _extract_llm_text(history_entry):
+    outputs = history_entry.get("outputs", {}) if isinstance(history_entry, dict) else {}
+    for node_output in outputs.values():
+        if not isinstance(node_output, dict):
+            continue
+        text = node_output.get("text")
+        if isinstance(text, list) and text and isinstance(text[0], str):
+            return text[0]
+        for value in node_output.values():
+            if isinstance(value, list) and value and isinstance(value[0], str):
+                return value[0]
+    return ""
+
+
+def _clean_enhanced_prompt(text):
+    text = str(text or "").strip()
+    if len(text) >= 2 and ((text[0] == '"' and text[-1] == '"') or (text[0] == "'" and text[-1] == "'")):
+        text = text[1:-1].strip()
+    return text
+
+
+def _build_krea_t2i_prompt(data):
+    workflow_path = os.path.join(NODE_DIR, "workflows", "krea_t2i_workflow.json")
+    with open(workflow_path, "r", encoding="utf-8") as f:
+        prompt = json.load(f)
+
+    preset_name = str(_payload_get(data, "presets", "preset", "Preset", default="KreaRaw")).strip() or "KreaRaw"
+    state = _preset_state(preset_name)
+    text = str(_payload_get(data, "prompt", "text", default="")).strip()
+    if not text:
+        raise ValueError("prompt is required")
+
+    width_default = state.get("resW") or 720
+    height_default = state.get("resH") or 1280
+    batch_default = state.get("batchCount") or 1
+    steps_default = state.get("steps") or 8
+    cfg_default = state.get("cfg") if state.get("cfg") is not None else 1
+    denoise_default = state.get("denoise") if state.get("denoise") is not None else 1
+
+    width = _clamp_int(_payload_get(data, "width", "Width", default=width_default), width_default, 64, 4096)
+    height = _clamp_int(_payload_get(data, "height", "Height", default=height_default), height_default, 64, 4096)
+    steps = _clamp_int(_payload_get(data, "steps", "Steps", default=steps_default), steps_default, 1, 100)
+    batch = _clamp_int(_payload_get(data, "batch", "Batch", "batch_size", default=batch_default), batch_default, 1, 16)
+    cfg = _clamp_float(_payload_get(data, "cfg", "CFG", default=cfg_default), cfg_default, 0, 30)
+    denoise = _clamp_float(_payload_get(data, "denoise", "Denoise", default=denoise_default), denoise_default, 0, 1)
+    seed = _krea_seed(_payload_get(data, "seed", "Seed", default=-1 if state.get("randomizeSeed", True) else state.get("seed", -1)))
+    sampler = str(_payload_get(data, "sampler_name", "sampler", "Sampler", default=state.get("sampler") or "er_sde"))
+    scheduler = str(_payload_get(data, "scheduler", "Scheduler", default=state.get("scheduler") or "simple"))
+
+    model = str(_payload_get(data, "model", "unet", "unet_name", default=_default_krea_model(state)))
+    clip = str(_payload_get(data, "clip", "text_encoder", "clip_name", default=state.get("kreaTextEncoder") or "qwen3vl_4b_bf16.safetensors"))
+    vae = str(_payload_get(data, "vae", "vae_name", default=state.get("kreaVae") or "qwen_image_vae.safetensors"))
+    enhancer_enabled = _payload_get(data, "enhancer_enabled", "enhancerEnabled", default=state.get("kreaEnhancerEnabled", True))
+    enhancer_strength = _payload_get(data, "enhancer_strength", "enhancerStrength", default=state.get("kreaEnhancerStrength", 1.5))
+    loras = _active_loras(data, state)
+    effective_prompt = _prompt_with_lora_triggers(text, loras)
+
+    if prompt.get("KREA:BUILDER"):
+        del prompt["KREA:BUILDER"]
+    _set_workflow_input(prompt, "KREA:POS", "text", effective_prompt)
+    _set_workflow_input(prompt, "KREA:MODEL", "unet_name", model)
+    _set_workflow_input(prompt, "KREA:CLIP", "clip_name", clip)
+    _set_workflow_input(prompt, "KREA:VAE", "vae_name", vae)
+    _set_workflow_input(prompt, "KREA:ENH", "enabled", _as_bool(enhancer_enabled))
+    _set_workflow_input(prompt, "KREA:ENH", "strength", _clamp_float(enhancer_strength, 1.5, 0, 10))
+    _apply_krea_loras(prompt, loras)
+    _set_workflow_input(prompt, "KREA:LATENT", "width", width)
+    _set_workflow_input(prompt, "KREA:LATENT", "height", height)
+    _set_workflow_input(prompt, "KREA:LATENT", "batch_size", batch)
+    _set_workflow_input(prompt, "KREA:KS", "seed", seed)
+    _set_workflow_input(prompt, "KREA:KS", "steps", steps)
+    _set_workflow_input(prompt, "KREA:KS", "cfg", cfg)
+    _set_workflow_input(prompt, "KREA:KS", "sampler_name", sampler)
+    _set_workflow_input(prompt, "KREA:KS", "scheduler", scheduler)
+    _set_workflow_input(prompt, "KREA:KS", "denoise", denoise)
+    _set_workflow_input(prompt, "KREA:SAVE", "filename_prefix", f"{SUBFOLDER}/krea")
+
+    return prompt, {
+        "preset": preset_name,
+        "model": model,
+        "clip": clip,
+        "vae": vae,
+        "enhancer_enabled": _as_bool(enhancer_enabled),
+        "enhancer_strength": _clamp_float(enhancer_strength, 1.5, 0, 10),
+        "loras": loras,
+        "prompt": text,
+        "effective_prompt": effective_prompt,
+        "steps": steps,
+        "batch": batch,
+        "width": width,
+        "height": height,
+        "seed": seed,
+        "cfg": cfg,
+        "sampler_name": sampler,
+        "scheduler": scheduler,
+        "denoise": denoise,
+    }
+
+
+def _history_images(history_entry):
+    images = []
+    outputs = history_entry.get("outputs", {}) if isinstance(history_entry, dict) else {}
+    for output in outputs.values():
+        for image in output.get("images", []) if isinstance(output, dict) else []:
+            filename = image.get("filename")
+            if not filename:
+                continue
+            subfolder = image.get("subfolder", "") or ""
+            image_type = image.get("type", "output") or "output"
+            if image_type != "output" or (subfolder and not subfolder.startswith(SUBFOLDER)):
+                continue
+            query = urlencode({"filename": filename, "subfolder": subfolder, "type": image_type})
+            images.append({
+                "filename": filename,
+                "subfolder": subfolder,
+                "type": image_type,
+                "url": f"/view?{query}",
+            })
+    return images
+
+
+def _api_generation_meta(settings):
+    return {
+        "v": 1,
+        "prompt": settings.get("prompt", ""),
+        "w": settings.get("width"),
+        "h": settings.get("height"),
+        "mode": "t2i",
+        "modelFamily": "krea",
+        "preset": settings.get("preset"),
+        "model": settings.get("model"),
+        "kreaModel": settings.get("model"),
+        "kreaTextEncoder": settings.get("clip"),
+        "kreaVae": settings.get("vae"),
+        "kreaPromptMode": "plain",
+        "kreaEnhancerEnabled": settings.get("enhancer_enabled"),
+        "kreaEnhancerStrength": settings.get("enhancer_strength"),
+        "userLoras": [
+            {"n": os.path.basename(str(lora.get("name", "")).replace("\\", os.sep)), "s": lora.get("strength")}
+            for lora in settings.get("loras", [])
+        ],
+        "steps": settings.get("steps"),
+        "cfg": settings.get("cfg"),
+        "sampler": settings.get("sampler_name"),
+        "scheduler": settings.get("scheduler"),
+        "advancedUI": True,
+        "seed": settings.get("seed"),
+        "randomizeSeed": True,
+        "api": True,
+        "effectivePrompt": settings.get("effective_prompt"),
+    }
+
+
+def _save_api_metadata(images, settings):
+    meta = _api_generation_meta(settings)
+    for image in images:
+        path = _resolve_image_file(image.get("filename", ""), image.get("subfolder", ""), image.get("type", "output"))
+        if path:
+            _write_json_meta(path, meta)
+
+
+@PromptServer.instance.routes.post("/flux_klein/api/prompt-enhance")
+async def api_prompt_enhance(request):
+    try:
+        data = await request.json()
+        if not isinstance(data, dict):
+            return web.json_response({"ok": False, "error": "invalid payload"}, status=400)
+        prompt, settings = _build_prompt_enhance_workflow(data)
+    except ValueError as e:
+        return web.json_response({"ok": False, "error": str(e)}, status=400)
+    except Exception as e:
+        print(f"[FluxKlein] prompt-enhance build error: {e}")
+        return web.json_response({"ok": False, "error": str(e)}, status=500)
+
+    server = PromptServer.instance
+    prompt_id = str(uuid.uuid4())
+    try:
+        request_data = server.trigger_on_prompt({"prompt": prompt, "extra_data": {"enable_previews": True}})
+        prompt = request_data["prompt"]
+        server.node_replace_manager.apply_replacements(prompt)
+        valid = await execution.validate_prompt(prompt_id, prompt, None)
+        if not valid[0]:
+            return web.json_response({"ok": False, "error": valid[1], "node_errors": valid[3]}, status=400)
+
+        number = server.number
+        server.number += 1
+        extra_data = request_data.get("extra_data", {})
+        extra_data["create_time"] = int(time.time() * 1000)
+        server.prompt_queue.put((number, prompt_id, prompt, extra_data, valid[2], {}))
+    except Exception as e:
+        print(f"[FluxKlein] prompt-enhance queue error: {e}")
+        return web.json_response({"ok": False, "prompt_id": prompt_id, "error": str(e)}, status=500)
+
+    timeout = _clamp_float(_payload_get(data, "timeout", "Timeout", default=300), 300, 1, 900)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        history = server.prompt_queue.get_history(prompt_id=prompt_id)
+        entry = history.get(prompt_id) if isinstance(history, dict) else None
+        if entry:
+            status = entry.get("status") or {}
+            if status.get("status_str") == "error":
+                return web.json_response({"ok": False, "prompt_id": prompt_id, "status": status}, status=500)
+            enhanced_prompt = _clean_enhanced_prompt(_extract_llm_text(entry))
+            if enhanced_prompt:
+                return web.json_response({
+                    "ok": True,
+                    "prompt_id": prompt_id,
+                    "prompt": settings["prompt"],
+                    "enhanced_prompt": enhanced_prompt,
+                    "settings": settings,
+                })
+        await asyncio.sleep(0.5)
+
+    return web.json_response({"ok": False, "prompt_id": prompt_id, "error": "prompt enhance timed out"}, status=504)
+
+
+@PromptServer.instance.routes.post("/flux_klein/api/krea_t2i")
+async def api_krea_t2i(request):
+    try:
+        data = await request.json()
+        if not isinstance(data, dict):
+            return web.json_response({"ok": False, "error": "invalid payload"}, status=400)
+        prompt, settings = _build_krea_t2i_prompt(data)
+    except PresetNotFoundError as e:
+        return web.json_response({
+            "ok": False,
+            "error": "preset_not_found",
+            "message": str(e),
+            "preset": e.preset_name,
+            "available_presets": e.available_presets,
+        }, status=400)
+    except ValueError as e:
+        return web.json_response({"ok": False, "error": str(e)}, status=400)
+    except Exception as e:
+        print(f"[FluxKlein] krea_t2i build error: {e}")
+        return web.json_response({"ok": False, "error": str(e)}, status=500)
+
+    server = PromptServer.instance
+    prompt_id = str(uuid.uuid4())
+    try:
+        request_data = server.trigger_on_prompt({"prompt": prompt, "extra_data": {"enable_previews": True}})
+        prompt = request_data["prompt"]
+        server.node_replace_manager.apply_replacements(prompt)
+        valid = await execution.validate_prompt(prompt_id, prompt, None)
+        if not valid[0]:
+            return web.json_response({"ok": False, "error": valid[1], "node_errors": valid[3]}, status=400)
+
+        number = server.number
+        server.number += 1
+        extra_data = request_data.get("extra_data", {})
+        extra_data["create_time"] = int(time.time() * 1000)
+        server.prompt_queue.put((number, prompt_id, prompt, extra_data, valid[2], {}))
+    except Exception as e:
+        print(f"[FluxKlein] krea_t2i queue error: {e}")
+        return web.json_response({"ok": False, "prompt_id": prompt_id, "error": str(e)}, status=500)
+
+    timeout = _clamp_float(_payload_get(data, "timeout", "Timeout", default=300), 300, 1, 900)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        history = server.prompt_queue.get_history(prompt_id=prompt_id)
+        entry = history.get(prompt_id) if isinstance(history, dict) else None
+        if entry:
+            status = entry.get("status") or {}
+            if status.get("status_str") == "error":
+                return web.json_response({"ok": False, "prompt_id": prompt_id, "status": status}, status=500)
+            images = _history_images(entry)
+            _save_api_metadata(images, settings)
+            return web.json_response({
+                "ok": True,
+                "prompt_id": prompt_id,
+                "images": images,
+                "settings": settings,
+            })
+        await asyncio.sleep(0.5)
+
+    return web.json_response({"ok": False, "prompt_id": prompt_id, "error": "generation timed out"}, status=504)
+
+
 @PromptServer.instance.routes.get("/flux_klein/bgremoval_models")
 async def get_bgremoval_models(request):
     """Scan models/background_removal/ for all model files."""
@@ -610,6 +1120,19 @@ async def save_config_route(request):
         return web.json_response({"ok": True})
     except Exception as e:
         print(f"[FluxKlein] config save error: {e}")
+        return web.json_response({"ok": False, "error": str(e)}, status=500)
+
+
+@PromptServer.instance.routes.post("/flux_klein/runtime_state")
+async def save_runtime_state(request):
+    try:
+        state = await request.json()
+        if not isinstance(state, dict):
+            return web.json_response({"ok": False, "error": "invalid payload"}, status=400)
+        _save_config({"runtime_state": state})
+        return web.json_response({"ok": True})
+    except Exception as e:
+        print(f"[FluxKlein] runtime_state save error: {e}")
         return web.json_response({"ok": False, "error": str(e)}, status=500)
 
 
