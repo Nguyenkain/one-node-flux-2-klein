@@ -17,6 +17,44 @@ NODE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(NODE_DIR, 'config.json')
 SUBFOLDER = "one-node-flux-2-klein"
 
+# Track workflow start time so TelegramNotify can report elapsed run time.
+# ComfyUI runs one prompt at a time, so a single latest-start marker is enough.
+# We patch PromptExecutor.add_message once to stamp it on "execution_start".
+_workflow_start = {"t": None}
+
+
+def _install_exec_timer():
+    pe = getattr(execution, "PromptExecutor", None)
+    if pe is None or getattr(pe, "_fk_timer_patched", False):
+        return
+    orig = pe.add_message
+
+    def add_message(self, event, data, broadcast):
+        if event == "execution_start":
+            _workflow_start["t"] = time.perf_counter()
+        return orig(self, event, data, broadcast)
+
+    pe.add_message = add_message
+    pe._fk_timer_patched = True
+
+
+def _elapsed_str():
+    """Human-readable elapsed time since workflow start, or '' if unknown."""
+    t0 = _workflow_start.get("t")
+    if t0 is None:
+        return ""
+    secs = max(0.0, time.perf_counter() - t0)
+    if secs < 60:
+        return "%.1fs" % secs
+    m, s = divmod(int(secs), 60)
+    if m < 60:
+        return "%dm%02ds" % (m, s)
+    h, m = divmod(m, 60)
+    return "%dh%02dm%02ds" % (h, m, s)
+
+
+_install_exec_timer()
+
 # User config lives outside the node folder so it survives reinstalls / git pull.
 USER_CONFIG_DIR = os.path.join(folder_paths.get_user_directory(), "default", SUBFOLDER)
 USER_CONFIG_PATH = os.path.join(USER_CONFIG_DIR, "config.json")
@@ -545,6 +583,18 @@ class PresetNotFoundError(ValueError):
 def _settings_presets():
     presets = _load_config().get("settings_presets") or {}
     return presets if isinstance(presets, dict) else {}
+
+
+def _telegram_profiles():
+    """Named Telegram config profiles: {name: {bot_token, chat_id, message_thread_id}}."""
+    profiles = _load_config().get("telegram_profiles") or {}
+    return profiles if isinstance(profiles, dict) else {}
+
+
+def _save_telegram_profile(name, fields):
+    profiles = dict(_telegram_profiles())
+    profiles[name] = {k: v for k, v in fields.items() if v}
+    _save_config({"telegram_profiles": profiles})
 
 
 def _preset_state(preset_name):
@@ -1131,6 +1181,17 @@ async def save_config_route(request):
         return web.json_response({"ok": False, "error": str(e)}, status=500)
 
 
+@PromptServer.instance.routes.get("/flux_klein/telegram_profile")
+async def get_telegram_profile(request):
+    """Return one saved Telegram profile (or the list of names) so the JS can
+    auto-fill the widgets when a profile is picked from the dropdown."""
+    name = request.query.get("name", "")
+    profiles = _telegram_profiles()
+    if name:
+        return web.json_response(profiles.get(name) or {})
+    return web.json_response({"names": sorted(profiles.keys())})
+
+
 @PromptServer.instance.routes.post("/flux_klein/runtime_state")
 async def save_runtime_state(request):
     try:
@@ -1658,8 +1719,175 @@ class FluxKleinOneNode:
         return float("nan")
 
 
-NODE_CLASS_MAPPINGS = {"FluxKleinOneNode": FluxKleinOneNode}
-NODE_DISPLAY_NAME_MAPPINGS = {"FluxKleinOneNode": "One Node · FLUX.2 [klein]"}
+def _tensor_to_png_bytes(image):
+    """Convert one IMAGE tensor frame [H,W,3] float32 0..1 to PNG bytes."""
+    import io
+    import numpy as np
+    from PIL import Image
+    arr = (image.cpu().numpy() * 255.0).clip(0, 255).astype(np.uint8)
+    buf = io.BytesIO()
+    Image.fromarray(arr, "RGB").save(buf, format="PNG")
+    return buf.getvalue()
+
+
+class TelegramNotify:
+    """Send generated image(s) or a video to a Telegram bot/topic when the graph runs.
+
+    - `images` connected  → each frame sent via sendPhoto.
+    - `video_filename` set → resolved from the output dir and sent via sendVideo
+      (takes priority over images when both are given).
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        # `profile` dropdown is populated from saved profiles (refreshes on page reload).
+        names = ["(none)"] + sorted(_telegram_profiles().keys())
+        return {
+            "required": {
+                "profile": (names,),
+            },
+            "optional": {
+                "save_as": ("STRING", {"default": ""}),  # name → save current fields as a profile
+                "bot_token": ("STRING", {"default": ""}),
+                "chat_id": ("STRING", {"default": ""}),
+                "message_thread_id": ("STRING", {"default": ""}),  # topic id
+                "images": ("IMAGE",),
+                "filenames": ("VHS_FILENAMES",),  # from VideoCombine (VideoHelperSuite)
+                "video_filename": ("STRING", {"default": ""}),  # e.g. "AnimateDiff_00001.mp4"
+                "caption": ("STRING", {"multiline": True, "default": "✅ Đã tạo xong"}),
+                "include_time": ("BOOLEAN", {"default": True}),  # append workflow run time
+            },
+        }
+
+    RETURN_TYPES = ()
+    FUNCTION = "send"
+    CATEGORY = "One Node"
+    OUTPUT_NODE = True
+
+    @classmethod
+    def IS_CHANGED(cls, **kwargs):
+        return float("nan")  # always re-run so every generation fires a notification
+
+    def _post(self, method, token, data, files):
+        import requests
+        try:
+            r = requests.post(
+                "https://api.telegram.org/bot%s/%s" % (token, method),
+                data=data, files=files, timeout=120,
+            )
+            if r.ok and r.json().get("ok"):
+                return True
+            desc = ""
+            try:
+                desc = r.json().get("description", "")
+            except Exception:
+                desc = r.text[:300]
+            # Topic sai/không tồn tại → gửi lại vào chat chính, không mất noti.
+            # (file objects đã bị đọc hết ở lần post trên, nên chỉ retry được với
+            #  data không kèm files — ảnh/video dùng bytes nên caller retry riêng.)
+            if "thread not found" in desc.lower() and "message_thread_id" in data:
+                print("[TelegramNotify] topic không tồn tại → gửi vào chat chính.")
+                data = {k: v for k, v in data.items() if k != "message_thread_id"}
+                # rewind any file handles consumed by the first attempt (video)
+                for v in files.values():
+                    f = v[1] if isinstance(v, (list, tuple)) and len(v) > 1 else v
+                    if hasattr(f, "seek"):
+                        try:
+                            f.seek(0)
+                        except Exception:
+                            pass
+                return self._post(method, token, data, files)
+            print("[TelegramNotify] %s lỗi: %s" % (method, desc))
+        except Exception as e:
+            print("[TelegramNotify] %s exception: %s" % (method, e))
+        return False
+
+    @staticmethod
+    def _video_path(filenames, video_filename):
+        """Pick a video path from a VHS_FILENAMES tuple (save_output, [paths]) or a
+        plain filename string. Returns an absolute path or None."""
+        # VHS_FILENAMES: (bool, [absolute paths]); last entry is the muxed video.
+        if filenames:
+            paths = filenames[1] if isinstance(filenames, (list, tuple)) and len(filenames) > 1 else filenames
+            if isinstance(paths, (list, tuple)):
+                for p in reversed(paths):
+                    if isinstance(p, str) and os.path.isfile(p):
+                        return p
+            elif isinstance(paths, str) and os.path.isfile(paths):
+                return paths
+        vfn = (video_filename or "").strip()
+        if vfn:
+            return _resolve_image_file(os.path.basename(vfn), os.path.dirname(vfn))
+        return None
+
+    def send(self, profile="(none)", save_as="", bot_token="", chat_id="",
+             message_thread_id="", images=None, filenames=None, video_filename="",
+             caption="", include_time=True):
+        # Named profiles: pick one from the `profile` dropdown to load, or type a
+        # name in `save_as` to store the current fields as a new/updated profile.
+        # Typed fields override the loaded profile (so you can tweak then re-save).
+        prof = _telegram_profiles().get(profile, {}) if profile and profile != "(none)" else {}
+        token = (bot_token or "").strip() or prof.get("bot_token", "")
+        chat = (chat_id or "").strip() or prof.get("chat_id", "")
+        thread = (message_thread_id or "").strip() or prof.get("message_thread_id", "")
+
+        name = (save_as or "").strip()
+        if name:
+            _save_telegram_profile(name, {"bot_token": token, "chat_id": chat,
+                                          "message_thread_id": thread})
+            print("[TelegramNotify] đã lưu profile '%s'. Reload trang để hiện trong dropdown." % name)
+
+        if not token or not chat:
+            print("[TelegramNotify] bot_token/chat_id trống — chọn profile hoặc nhập tay.")
+            return {}
+
+        # Append workflow run time to the caption.
+        if include_time:
+            elapsed = _elapsed_str()
+            if elapsed:
+                caption = ("%s\n⏱ %s" % (caption, elapsed)) if caption else ("⏱ %s" % elapsed)
+                print("[TelegramNotify] thời gian workflow: %s" % elapsed)
+
+        def base(with_caption):
+            d = {"chat_id": chat}
+            if thread:
+                d["message_thread_id"] = thread
+            if with_caption and caption:
+                d["caption"] = caption
+            return d
+
+        if filenames or (video_filename or "").strip():
+            path = self._video_path(filenames, video_filename)
+            if not path:
+                print("[TelegramNotify] không tìm thấy video (filenames/video_filename).")
+                return {}
+            with open(path, "rb") as f:
+                ok = self._post("sendVideo", token, base(True),
+                                {"video": (os.path.basename(path), f, "video/mp4")})
+            print("[TelegramNotify] video %s: %s" % (os.path.basename(path), "OK" if ok else "FAIL"))
+            return {}
+
+        if images is None or len(images) == 0:
+            print("[TelegramNotify] không có images cũng không có video_filename.")
+            return {}
+
+        sent = 0
+        for i, image in enumerate(images):
+            if self._post("sendPhoto", token, base(i == 0),
+                          {"photo": ("image.png", _tensor_to_png_bytes(image), "image/png")}):
+                sent += 1
+        print("[TelegramNotify] đã gửi %d/%d ảnh." % (sent, len(images)))
+        return {}
+
+
+NODE_CLASS_MAPPINGS = {
+    "FluxKleinOneNode": FluxKleinOneNode,
+    "TelegramNotify": TelegramNotify,
+}
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "FluxKleinOneNode": "One Node · FLUX.2 [klein]",
+    "TelegramNotify": "Telegram Notify",
+}
 
 
 # ── LLM endpoints ─────────────────────────────────────────────────────────────
