@@ -25,7 +25,7 @@ The node has been updated since the tutorial was recorded - check the [Changelog
 
 ## What it does
 
-The node has 6 modes, switchable with a single click:
+The node has 7 modes, switchable with a single click:
 
 **T2I** - standard text to image generation.
 
@@ -41,6 +41,8 @@ The node has 6 modes, switchable with a single click:
 **FACESWAP** - swap a face from a source image onto a target. Requires a Faceswap LoRA.
 
 **POSE** - copy the pose from one image onto the character from a reference image. Requires the DWPose preprocessor node and a RefControl pose LoRA (a 9B LoRA only for now).
+
+**UPSCALE** - enlarge an image 2x, 4x, 6x or 8x with SeedVR2. Great on small or pixelated images. Requires the SeedVR2 model and VAE (see the Models section).
 
 ---
 
@@ -100,6 +102,16 @@ The Faceswap LoRA is required for the Faceswap mode, and the Pose LoRA for the P
 **Remove Background** (place in `models/background_removal/`)
 - [birefnet](https://huggingface.co/Comfy-Org/BiRefNet/tree/main/background_removal)
 
+**Upscaler (SeedVR2)** — for UPSCALE mode
+
+The UPSCALE mode uses SeedVR2, a fast and genuinely great upscaler. I picked it as the main upscaler because it works really well, especially on small resolutions and pixelated images where most upscalers struggle.
+
+**Upscale model** (place in `models/diffusion_models/`)
+- [SeedVR2 diffusion models](https://huggingface.co/Comfy-Org/SeedVR2/tree/main/diffusion_models) — pick the one that fits your VRAM and speed needs
+
+**Upscale VAE** (place in `models/vae/`)
+- [ema_vae_fp16](https://huggingface.co/Comfy-Org/SeedVR2/blob/main/vae/ema_vae_fp16.safetensors)
+
 ---
 
 ## License note on FLUX.2 [klein] 9B
@@ -127,6 +139,22 @@ Built with the help of [Claude](https://claude.ai) by Anthropic.
 ---
 
 ## Changelog
+
+### July 17, 2026
+
+**New UPSCALE mode (SeedVR2)**
+
+A dedicated Upscale mode powered by SeedVR2. Pick a scale of 2x, 4x, 6x or 8x and let it restore detail. There is also an optional "Scale by longer side" that shrinks the source first, which sounds backwards but SeedVR2 shines on small and pixelated inputs, so downscaling before the upscale often gives cleaner results.
+
+You can also upscale straight from the preview. After any generation a small Upscale button appears in the bottom left corner, so you can upscale the image you just made (or the selected one in a batch) without switching modes.
+
+SeedVR2 needs its own model and VAE, set both in Settings. See the Models section above for the download links.
+
+**Denoise control for Inpaint**
+
+The inpaint editor now has a Change strength slider, same idea as in Image to Image. At 100% it fully repaints the masked area (the default, unchanged behaviour), lower values keep more of the original content under the mask for subtler edits. Thanks @ZeroCool22 for the great idea.
+
+---
 
 ### July 4, 2026
 

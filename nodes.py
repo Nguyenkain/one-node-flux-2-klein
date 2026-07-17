@@ -2,6 +2,7 @@
 import json
 import glob
 import time
+import uuid
 import subprocess
 import shutil
 from pathlib import Path
@@ -487,6 +488,7 @@ PromptServer.instance.routes.get("/flux_klein/workflow_inpaint")(_serve_json("wo
 PromptServer.instance.routes.get("/flux_klein/workflow_outpaint")(_serve_json("workflows/outpaint_workflow.json"))
 PromptServer.instance.routes.get("/flux_klein/workflow_faceswap")(_serve_json("workflows/faceswap_workflow.json"))
 PromptServer.instance.routes.get("/flux_klein/workflow_pose")(_serve_json("workflows/pose_workflow.json"))
+PromptServer.instance.routes.get("/flux_klein/workflow_upscale")(_serve_json("workflows/upscale_workflow.json"))
 PromptServer.instance.routes.get("/flux_klein/workflow_remove_bg")(_serve_json("workflows/remove_bg_workflow.json"))
 
 
@@ -679,6 +681,36 @@ async def save_temp(request):
     except Exception as e:
         print(f"[FluxKlein] save_temp error: {e}")
         return web.json_response({"ok": False, "error": str(e)})
+
+
+@PromptServer.instance.routes.post("/flux_klein/stage_input")
+async def stage_input(request):
+    """Copy an existing result (output or temp) into the ComfyUI input folder so a
+    workflow's LoadImage can read it. Used by quick-upscale, which re-feeds the image
+    currently shown in the preview back into the upscale workflow.
+    Returns the input-folder filename to put into LoadImage."""
+    try:
+        data = await request.json()
+        filename = data.get("filename", "")
+        subfolder = data.get("subfolder", "") or ""
+        ftype = data.get("type", "output") or "output"
+        if not filename:
+            return web.json_response({"ok": False, "error": "no filename"}, status=400)
+
+        src = _resolve_image_file(filename, subfolder, ftype)
+        if not src:
+            return web.json_response({"ok": False, "error": f"not found: {filename}"}, status=404)
+
+        input_dir = Path(folder_paths.get_input_directory()).resolve()
+        os.makedirs(str(input_dir), exist_ok=True)
+        ext = os.path.splitext(filename)[1] or ".png"
+        dest_name = f"fk_upscale_src_{uuid.uuid4().hex[:10]}{ext}"
+        dest_path = input_dir / dest_name
+        shutil.copy2(str(src), str(dest_path))
+        return web.json_response({"ok": True, "name": dest_name})
+    except Exception as e:
+        print(f"[FluxKlein] stage_input error: {e}")
+        return web.json_response({"ok": False, "error": str(e)}, status=500)
 
 
 @PromptServer.instance.routes.post("/flux_klein/update_meta")

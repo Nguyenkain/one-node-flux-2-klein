@@ -123,7 +123,9 @@ function Toggle(labelTxt,checked,onChange,activeColor){
 }
 
 // ── Dropdown ──────────────────────────────────────────────────────────────────
-function DD(items,selected,onChange){
+// preferDown: open the panel below the trigger when there's room. The default prefers ABOVE
+// (most dropdowns here sit low in the panel); pass true where opening upward looks wrong.
+function DD(items,selected,onChange,preferDown){
   let val=selected;
   const wrap=mk("div",{position:"relative",width:"100%",minWidth:"0",overflow:"hidden"});
   const trig=mk("div",{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:"7px",
@@ -164,7 +166,13 @@ function DD(items,selected,onChange){
     panel.style.left=rect.left+"px";
     panel.style.width=Math.max(rect.width,140)+"px";
     const ph=Math.min(items.length*28+44,220);
-    panel.style.top=(rect.top-ph-4>8?rect.top-ph-4:rect.bottom+4)+"px";
+    if(preferDown){
+      // Below unless it would run off the bottom of the viewport.
+      const fitsBelow=rect.bottom+4+ph<=window.innerHeight-8;
+      panel.style.top=(fitsBelow?rect.bottom+4:Math.max(8,rect.top-ph-4))+"px";
+    } else {
+      panel.style.top=(rect.top-ph-4>8?rect.top-ph-4:rect.bottom+4)+"px";
+    }
   };
   const open=()=>{
     document.body.appendChild(panel);panel.style.display="flex";
@@ -541,6 +549,16 @@ function _oneNodeChainForward(srcId){
       if(_activeSetStage) _activeSetStage("Generating…","Analyzing pose…",0);
       return;
     }
+    // UPSCALE (SeedVR2): a single sampler step plus tiled VAE encode/decode passes, so
+    // "Step 1/1" is meaningless and the tile counts look like a stuck/odd step counter.
+    // Report what's actually happening instead.
+    if(typeof node==="string"&&node.startsWith("FKU:")){
+      const pctU=max>0?Math.round(value/max*100):0;
+      const label=node==="FKU:enc"?"Encoding…":node==="FKU:dec"?"Decoding…":
+                  node==="FKU:sampler"?"Restoring detail…":"Upscaling…";
+      if(_activeSetStage) _activeSetStage("Upscaling…",label,pctU);
+      return;
+    }
     const pct=max>0?Math.round(value/max*100):0;
     if(_activeSetStage) _activeSetStage("Generating…",`Step ${value}/${max}`,pct);
   });
@@ -802,6 +820,7 @@ app.registerExtension({
           seed:          saved.seed||0,
           i2iImage:      saved.i2iImage||null,
           i2iDenoise:    saved.i2iDenoise!==undefined?saved.i2iDenoise:0.75,
+          inpaintDenoise: saved.inpaintDenoise!==undefined?saved.inpaintDenoise:1.0,
           i2iResizeLonger: saved.i2iResizeLonger||0,
           promptI2i:     saved.promptI2i||"",
           advancedUI:    saved.advancedUI||false,
@@ -815,7 +834,9 @@ app.registerExtension({
           image2Name:   saved.image2Name||null,
           fsTarget:     saved.fsTarget||null,   // faceswap: image to swap face IN
           fsSource:     saved.fsSource||null,   // faceswap: image whose face to use
-          fsLora:       saved.fsLora||"",       // faceswap: LoRA filename
+          // Older builds saved the literal "none" here, which the restore logic then treats as
+          // "no selection" — sanitise it back to "" so a real pick can stick.
+          fsLora:       (saved.fsLora==="none"?"":(saved.fsLora||"")),  // faceswap: LoRA filename
           fsResizeLonger: saved.fsResizeLonger||0, // 0 = disabled, >0 = resize longer side to this px
           bgRemovalModel: saved.bgRemovalModel||"",  // birefnet model for remove bg
           batchCount:   saved.batchCount||1,    // T2I: how many images to generate per click (1-4)
@@ -827,6 +848,16 @@ app.registerExtension({
           poseLora:     saved.poseLora||"",      // refcontrol poses LoRA
           poseUseSizeSource: saved.poseUseSizeSource!==undefined?saved.poseUseSizeSource:"pose", // "pose"|"ref" badge
           poseResizeLonger:  saved.poseResizeLonger||0,   // 0 = disabled, >0 = resize longer side
+          // Upscale (SeedVR2): its own model + VAE, and the scale factor used by both the
+          // UPSCALE pill and the quick-upscale button next to the preview.
+          upscaleImage: saved.upscaleImage||null,  // UPSCALE pill: source image
+          upscaleModel: saved.upscaleModel||"",    // seedvr2 diffusion model
+          upscaleVae:   saved.upscaleVae||"",      // seedvr2 ema vae
+          upscaleFactor: saved.upscaleFactor||2,   // 2 | 4 | 6 | 8 (UPSCALE pill)
+          // Optional shrink BEFORE upscaling (0 = off). SeedVR2 adds far more detail when it
+          // starts from a small source, so downsizing first often beats upscaling as-is.
+          upscalePreLonger: saved.upscalePreLonger||0,
+          quickUpscaleFactor: saved.quickUpscaleFactor||2, // 2 | 4 | 6 | 8 (button next to auto-save)
           // Prompt — shared (active pill's value) + per-pill storage
           prompt:       saved.prompt||"",
           promptT2i:    saved.promptT2i!==undefined?saved.promptT2i:((!saved.pill||saved.pill==="t2i")?saved.prompt||"":""),
@@ -880,9 +911,13 @@ app.registerExtension({
           batchCount:S.batchCount, autoSave:S.autoSave, autoSend:S.autoSend,
           poseImage:S.poseImage, poseRef:S.poseRef, poseLora:S.poseLora,
           poseUseSizeSource:S.poseUseSizeSource, poseResizeLonger:S.poseResizeLonger,
+          upscaleImage:S.upscaleImage, upscaleModel:S.upscaleModel, upscaleVae:S.upscaleVae,
+          upscaleFactor:S.upscaleFactor, upscalePreLonger:S.upscalePreLonger,
+          quickUpscaleFactor:S.quickUpscaleFactor,
           prompt:S.prompt, promptT2i:S.promptT2i, promptEdit:S.promptEdit,
           promptPaint:S.promptPaint, promptFs:S.promptFs, promptI2i:S.promptI2i, promptPose:S.promptPose,
           i2iImage:S.i2iImage, i2iDenoise:S.i2iDenoise, i2iResizeLonger:S.i2iResizeLonger,
+          inpaintDenoise:S.inpaintDenoise,
           userLoras:S.userLoras, soundEnabled, extLoaders:S.extLoaders,
           downscaleRef:S.downscaleRef, downscaleRefMP:S.downscaleRefMP,
           layoutMode:S.layoutMode, opFeather:S.opFeather,
@@ -1221,7 +1256,9 @@ app.registerExtension({
       // ── Workflow LoRAs box ────────────────────────────────────────────────
       // The three LoRAs used internally by the mode workflows (Faceswap, and the
       // two Pose phases) grouped in one subtly bordered box so it reads as a unit.
-      const fsLoraF=mkModDD("Faceswap LoRA","/models/loras",S.fsLora,v=>{S.fsLora=v;persist();});
+      // Normalise "none" to "" on the way in (same as Pose LoRA below). Storing the literal
+      // string "none" made the restore below reject it as "no selection" forever after.
+      const fsLoraF=mkModDD("Faceswap LoRA","/models/loras",S.fsLora||"none",v=>{S.fsLora=v==="none"?"":v;persist();});
       const poseLoraF=mkModDD("Pose LoRA","/models/loras",S.poseLora||"none",v=>{S.poseLora=v==="none"?"":v;persist();});
       const bgF=mkModDD("Remove BG Model","models/background_removal","none",v=>{S.bgRemovalModel=v==="none"?"":v;persist();});
       api.fetchApi("/flux_klein/bgremoval_models").then(r=>r.json()).then(d=>{
@@ -1233,11 +1270,24 @@ app.registerExtension({
 
       const _loraBox=mk("div",{
         border:`1px solid ${C.border}`,borderRadius:"8px",padding:"10px",
-        marginBottom:"16px",background:"rgba(255,255,255,.012)",
+        marginBottom:"6px",background:"rgba(255,255,255,.012)",
       });
       const _loraBoxGrid=mk("div",{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"8px"});
       _loraBoxGrid.append(fsLoraF.wrap,poseLoraF.wrap,bgF.wrap);
       _loraBox.append(_loraBoxGrid);
+
+      // ── Upscaler box ──────────────────────────────────────────────────────
+      // The SeedVR2 upscaler uses its OWN model + VAE (not the Flux ones), so they get
+      // their own labelled box to make that separation obvious at a glance.
+      const upModelF=mkModDD("Upscale Model (SeedVR2)","models/diffusion_models",S.upscaleModel||"none",v=>{S.upscaleModel=v==="none"?"":v;persist();},"seedvr");
+      const upVaeF=mkModDD("Upscale VAE","models/vae",S.upscaleVae||"none",v=>{S.upscaleVae=v==="none"?"":v;persist();},"ema_vae");
+      const _upBox=mk("div",{
+        border:`1px solid ${C.border}`,borderRadius:"8px",padding:"10px",
+        marginBottom:"16px",background:"rgba(255,255,255,.012)",
+      });
+      const _upBoxGrid=mk("div",{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px"});
+      _upBoxGrid.append(upModelF.wrap,upVaeF.wrap);
+      _upBox.append(_upBoxGrid);
 
       // ── Preferences ───────────────────────────────────────────────────────
       const prefTitle=mk("div",{fontSize:"10px",fontWeight:"700",letterSpacing:".1em",
@@ -1349,7 +1399,7 @@ app.registerExtension({
       _dsRow.append(_dsTop,_dsHint);
       _dsApplyEnabled();
 
-      settingsOverlay.append(settHdr,modGrid,_kvNote,_baseNote,_loraBox,prefTitle,soundToggle.el,advUIToggle.el,extLoadersToggle.el,_dsRow);
+      settingsOverlay.append(settHdr,modGrid,_kvNote,_baseNote,_loraBox,_upBox,prefTitle,soundToggle.el,advUIToggle.el,extLoadersToggle.el,_dsRow);
 
       // ── Overlay helpers ───────────────────────────────────────────────────
       const openOverlay=(el)=>{
@@ -1704,7 +1754,8 @@ app.registerExtension({
       const pillInpaint =Pill("PAINT",   activePill==="inpaint",  ()=>setPill("inpaint"));
       const pillFaceswap=Pill("FACESWAP",activePill==="faceswap", ()=>setPill("faceswap"));
       const pillPose    =Pill("POSE",    activePill==="pose",     ()=>setPill("pose"));
-      topBarLeft.append(pillT2I,pillI2I,pillEdit,pillInpaint,pillFaceswap,pillPose);
+      const pillUpscale =Pill("UPSCALE", activePill==="upscale",  ()=>setPill("upscale"));
+      topBarLeft.append(pillT2I,pillI2I,pillEdit,pillInpaint,pillFaceswap,pillPose,pillUpscale);
 
       let _promptTARef=null; // set after promptTA is created
 
@@ -1725,14 +1776,15 @@ app.registerExtension({
         S.prompt=S[_pillPromptKey(p)];
         if(_promptTARef){ _promptTARef.value=S.prompt; if(typeof _promptOvTA!=="undefined"&&_promptOvTA) _promptOvTA.value=S.prompt; }
         persist();
-        [pillT2I,pillI2I,pillEdit,pillInpaint,pillFaceswap,pillPose].forEach(b=>{
+        [pillT2I,pillI2I,pillEdit,pillInpaint,pillFaceswap,pillPose,pillUpscale].forEach(b=>{
           const isActive=
             (b===pillT2I&&p==="t2i")||
             (b===pillI2I&&p==="i2i")||
             (b===pillEdit&&p==="edit")||
             (b===pillInpaint&&p==="inpaint")||
             (b===pillFaceswap&&p==="faceswap")||
-            (b===pillPose&&p==="pose");
+            (b===pillPose&&p==="pose")||
+            (b===pillUpscale&&p==="upscale");
           b.style.background=isActive?LIME:C.bg2;
           b.style.color=isActive?"#111":C.text;
           b.style.borderColor=isActive?LIME:C.border;
@@ -5454,6 +5506,28 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       _inpFeatherSlider.oninput=()=>{ S.inpFeather=+_inpFeatherSlider.value||0; _inpFeatherFmt(); persist(); };
       _inpFeatherRow.append(_inpFeatherLbl,_inpFeatherSlider,_inpFeatherVal);
 
+      // ── Inpaint denoise — how much of the masked area gets regenerated ──
+      // Drives KSampler.denoise (FKI:163). 100% (=1.0) = full repaint (the original
+      // behaviour, default). Lower keeps more of what's already under the mask, useful
+      // for subtle edits. Same control users know from I2I.
+      const _inpDenRow=mk("div",{
+        display:"flex",alignItems:"center",gap:"6px",
+        border:`1px solid ${C.border}`,borderRadius:"6px",padding:"5px 10px",background:C.bg1,
+      });
+      const _inpDenLbl=mk("span",{fontSize:"9px",fontWeight:"600",color:C.muted,whiteSpace:"nowrap"});
+      tx(_inpDenLbl,"Change strength");
+      if(S.inpaintDenoise===undefined) S.inpaintDenoise=1.0;
+      S.inpaintDenoise=Math.max(0,Math.min(1,+S.inpaintDenoise));
+      const _inpDenSlider=mk("input",{width:"82px",accentColor:LIME,flexShrink:"0"},
+        {type:"range",min:"0",max:"100",step:"1",value:String(Math.round(S.inpaintDenoise*100))});
+      const _inpDenVal=mk("span",{fontSize:"9px",color:LIME,fontWeight:"700",whiteSpace:"nowrap",minWidth:"30px"});
+      const _inpDenFmt=()=>{ tx(_inpDenVal,`${Math.round((+S.inpaintDenoise)*100)}%`); };
+      _inpDenFmt();
+      _inpDenRow.title="How much of the masked area is regenerated. 100% fully repaints it (default); lower keeps more of the original content under the mask.";
+      _inpDenSlider.oninput=()=>{ S.inpaintDenoise=(parseInt(_inpDenSlider.value)||0)/100; _inpDenFmt(); persist(); };
+      _inpDenSlider.addEventListener("wheel",(e)=>{ e.preventDefault();e.stopPropagation(); });
+      _inpDenRow.append(_inpDenLbl,_inpDenSlider,_inpDenVal);
+
       const _inpCalcDims=()=>{
         const w=_maskCanvasW, h=_maskCanvasH;
         if(_inpUseOrigSize||!w||!h) return {w,h,resized:false};
@@ -5512,7 +5586,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         padding:"6px 16px 10px",borderTop:`1px solid rgba(255,255,255,.05)`,
         background:C.bg1,flexShrink:"0",
       });
-      _inpBar.append(_inpDimsLbl,_inpScaleRow,_inpFeatherRow);
+      _inpBar.append(_inpDimsLbl,_inpScaleRow,_inpFeatherRow,_inpDenRow);
 
       // ── Reference image panel (reference-guided inpainting) ────────────────
       // Floating card in the top-right of the canvas viewport. Inpaint mode only.
@@ -5563,6 +5637,10 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       };
 
       const _openMaskOv=(imgName,mode)=>{
+        // Re-sync inpaint sliders from state — covers values changed outside the editor
+        // (e.g. restored from a gallery image's metadata via "Load settings into UI").
+        _inpFeatherSlider.value=String(Math.max(0,Math.min(64,+S.inpFeather||0))); _inpFeatherFmt();
+        _inpDenSlider.value=String(Math.round(Math.max(0,Math.min(1,S.inpaintDenoise!==undefined?+S.inpaintDenoise:1))*100)); _inpDenFmt();
         _maskHistory=[];
         _opTop=0;_opRight=0;_opBottom=0;_opLeft=0;
         _opTopField._inp.value="0";_opRightField._inp.value="0";
@@ -6320,8 +6398,11 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       _seedLockedWarn.append(_seedLockedIcon,_seedLockedText,_seedLockedBtn);
 
       const _advRefresh=()=>{
-        advPanel.style.display=S.advancedUI?"flex":"none";
-        _seedLockedWarn.style.display=(!S.advancedUI&&!S.randomizeSeed)?"flex":"none";
+        // UPSCALE has no sampler/seed controls at all, so keep them hidden there even when
+        // Advanced control is on (this runs on its own from the Settings toggle too).
+        const _upActive=(typeof activePill!=="undefined"&&activePill==="upscale");
+        advPanel.style.display=(!_upActive&&S.advancedUI)?"flex":"none";
+        _seedLockedWarn.style.display=(!_upActive&&!S.advancedUI&&!S.randomizeSeed)?"flex":"none";
       };
       _advRefresh();
 
@@ -6739,7 +6820,180 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       if(S.poseImage) _poseImgSlot._restorePreview(S.poseImage);
       if(S.poseRef)   _poseRefSlot._restorePreview(S.poseRef);
 
-      leftPanel.append(i2iPanel,editPanel,inpaintPanel,faceswapPanel,posePanel,resSect,advPanel,seedRow,_seedLockedWarn,genRow);
+      // ── UPSCALE PANEL ─────────────────────────────────────────────────────
+      // One image slot + a scale factor. The SeedVR2 upscaler needs no prompt and no
+      // resolution controls — the factor drives everything — so this panel stays minimal.
+      const upscalePanel=mk("div",{display:"none",flexDirection:"column",gap:"6px"});
+
+      const _upSlotRow=mk("div",{display:"flex",gap:"10px",alignItems:"flex-start"});
+      // Fixed to the slot's own width (88px, see ImgSlot) so nothing underneath can widen the
+      // card and re-centre the slot.
+      const _upSlotCard=mk("div",{display:"flex",flexDirection:"column",gap:"3px",
+        alignItems:"center",width:"88px",flexShrink:"0"});
+      // Clickable size badge — same pattern/behaviour as the I2I one: lime = use the source's
+      // own size (resize locked); click to unlock "Scale by longer side".
+      const _upDims=(()=>{
+        let _w=0,_h=0;
+        const el=mk("div",{
+          fontSize:"9px",fontWeight:"700",letterSpacing:".04em",
+          textAlign:"center",cursor:"pointer",display:"none",
+          borderRadius:"5px",padding:"2px 6px",boxSizing:"border-box",
+          background:"rgba(240,255,65,.13)",border:`1px solid rgba(240,255,65,.5)`,color:LIME,
+        });
+        el._getDims=()=>({w:_w,h:_h});
+        el._set=(w,h)=>{ _w=w;_h=h; if(w&&h){ tx(el,`${w}×${h}`);el.style.display="block"; } else el.style.display="none"; };
+        return el;
+      })();
+      const _upSlot=ImgSlot(false,(name)=>{
+        S.upscaleImage=name||null;
+        if(name){ _upSlot.el.style.borderColor=""; tx(_upSlotLbl,"Image"); _upSlotLbl.style.color=C.muted; }
+        _upRefreshPreview();
+        persist();
+      },(w,h)=>{ _upDims._set(w,h); _upApplyPreState(); _upRefreshPreview(); });
+      const _upSlotLbl=mk("div",{fontSize:"8px",fontWeight:"700",color:C.muted,
+        textTransform:"uppercase",letterSpacing:".07em",textAlign:"center"});
+      tx(_upSlotLbl,"Image");
+      // Badge stays centred under the slot like every other mode. Its "→ result" readout is
+      // absolutely positioned to the right of it, so it can't widen the card and shove the
+      // slot sideways (which is what happened when it was a normal flex sibling).
+      // NOTE: the readout must be a SIBLING of the badge, not a child — _upDims._set() writes
+      // via textContent, which would wipe any child element.
+      const _upBadgeRow=mk("div",{position:"relative",display:"flex",justifyContent:"center",width:"100%"});
+      const _upBadgeResult=mk("span",{
+        position:"absolute",top:"50%",transform:"translateY(-50%)",
+        fontSize:"9px",fontWeight:"700",color:LIME,
+        whiteSpace:"nowrap",pointerEvents:"none",
+      });
+      _upBadgeRow.append(_upDims,_upBadgeResult);
+      _upSlotCard.append(_upSlot.el,_upSlotLbl,_upBadgeRow);
+      // Park the readout just right of the (centred) badge. Measured at runtime because the
+      // badge's width depends on the dimensions text. Hidden until measurable — on a fresh
+      // load the panel is display:none, so offsetWidth is 0 and a naive placement would leave
+      // the readout at left:0, stacked on top of the badge.
+      const _upPlaceBadgeResult=()=>{
+        const bw=_upDims.offsetWidth||0;
+        const rw=_upBadgeRow.offsetWidth||0;
+        if(!bw||!rw){ _upBadgeResult.style.visibility="hidden"; return; }
+        _upBadgeResult.style.left=Math.round((rw-bw)/2+bw+6)+"px";
+        _upBadgeResult.style.visibility="";
+      };
+      // The panel starts hidden (and can be re-shown by switching pills), so measure whenever
+      // it actually gets a size instead of guessing a frame. Watch the badge too — its width
+      // changes with the dimensions text while the row stays a fixed 88px.
+      if(typeof ResizeObserver!=="undefined"){
+        try{
+          const _upRO=new ResizeObserver(()=>_upPlaceBadgeResult());
+          _upRO.observe(_upBadgeRow);
+          _upRO.observe(_upDims);
+        }catch(e){}
+      }
+
+      // Scale factor + resulting size preview
+      const _upCtrls=mk("div",{display:"flex",flexDirection:"column",gap:"6px",flex:"1",minWidth:"0"});
+      const _upFactorRow=mk("div",{display:"flex",alignItems:"center",gap:"6px"});
+      const _upFactorLbl=mk("span",{fontSize:"9px",fontWeight:"600",color:C.muted,whiteSpace:"nowrap"});
+      tx(_upFactorLbl,"Scale");
+      const UPSCALE_FACTORS=["2x","4x","6x","8x"];
+      // preferDown: this one sits near the TOP of the panel, so opening upward would run it
+      // off the node.
+      const _upFactorDD=DD(UPSCALE_FACTORS,`${S.upscaleFactor||2}x`,v=>{
+        S.upscaleFactor=parseInt(v)||2; _upRefreshPreview(); persist();
+      },true);
+      _upFactorDD.el.style.width="70px";
+      _upFactorRow.append(_upFactorLbl,_upFactorDD.el);
+      _upCtrls.append(_upFactorRow);
+      _upSlotRow.append(_upSlotCard,_upCtrls);
+
+      // ── Pre-resize (optional) — mirrors the I2I "size badge + scale by longer side" flow.
+      // SeedVR2 shines on SMALL inputs (it invents detail rather than just sharpening), so the
+      // source can be shrunk first: source → (pre-resize) → ×factor.
+      let _upUseOrigSize=(+S.upscalePreLonger<=0); // true = lime badge, resize locked
+
+      const _upResizePreview=mk("span",{fontSize:"9px",fontWeight:"700",color:LIME,letterSpacing:".03em",whiteSpace:"nowrap"});
+      const _upPreLongerInp=NI("px",S.upscalePreLonger||512,64,4096,8,v=>{
+        S.upscalePreLonger=Math.round(v)||512;
+        _upRefreshPreview();
+        persist();
+      },52);
+
+      const _upUseOrigNote=mk("div",{fontSize:"8px",color:LIME,display:"none",marginTop:"0"});
+      tx(_upUseOrigNote,"Using size from Image.");
+
+      const _upResizeRow=mk("div",{display:"flex",alignItems:"center",gap:"6px",marginTop:"2px"});
+      const _upResizeRowLbl=mk("span",{fontSize:"8px",color:C.muted,whiteSpace:"nowrap",flexShrink:"0"});
+      tx(_upResizeRowLbl,"Scale by longer side");
+      _upResizeRow.append(_upResizeRowLbl,_upPreLongerInp,_upResizePreview);
+
+      // The "→ final size" readout lives next to whichever control drives it: the badge when
+      // using the image's own size, or the longer-side input when resizing first.
+      const _upRefreshPreview=()=>{
+        const d=_upDims._getDims();
+        const f=+S.upscaleFactor||2;
+        if(!d.w||!d.h){ tx(_upBadgeResult,""); tx(_upResizePreview,""); return; }
+        const pre=_upUseOrigSize?0:(+S.upscalePreLonger||0);
+        let sw=d.w, sh=d.h;
+        if(pre>0){
+          const s=pre/Math.max(d.w,d.h);
+          sw=Math.max(16,Math.round(d.w*s)); sh=Math.max(16,Math.round(d.h*s));
+        }
+        const fw=sw*f, fh=sh*f;
+        const heavy=(fw*fh)>(3840*2160);
+        const warn=heavy?"Very large result — may be slow or run out of VRAM.":"";
+        const col=heavy?"#f0a040":LIME;
+        if(_upUseOrigSize){
+          tx(_upBadgeResult,`→ ${fw}×${fh}`);
+          _upBadgeResult.style.color=col; _upBadgeResult.title=warn;
+          tx(_upResizePreview,"");
+        } else {
+          tx(_upBadgeResult,"");
+          tx(_upResizePreview,`→ ${fw}×${fh}`);
+          _upResizePreview.style.color=col; _upResizePreview.title=warn;
+        }
+        // Re-park after the badge text (and therefore its width) changed.
+        requestAnimationFrame(_upPlaceBadgeResult);
+      };
+
+      const _upApplyPreState=()=>{
+        const d=_upDims._getDims();
+        if(!d.w||!d.h) return;
+        if(_upUseOrigSize){
+          _upDims.style.color=LIME;
+          _upDims.style.background="rgba(240,255,65,.13)";
+          _upDims.style.borderColor="rgba(240,255,65,.5)";
+          _upDims.title="Upscaling the image at its own size — click to shrink it first";
+          _upUseOrigNote.style.display="block";
+          _upResizeRow.style.opacity="0.35";
+          _upResizeRow.style.pointerEvents="none";
+          _upPreLongerInp._inp.disabled=true;
+        } else {
+          _upDims.style.color=C.text;
+          _upDims.style.background=C.bg3;
+          _upDims.style.borderColor=C.borderH;
+          _upDims.title="Click to use the image's own size";
+          _upUseOrigNote.style.display="none";
+          _upResizeRow.style.opacity="1";
+          _upResizeRow.style.pointerEvents="auto";
+          _upPreLongerInp._inp.disabled=false;
+          if(S.upscalePreLonger<=0){ S.upscalePreLonger=_upPreLongerInp.numVal||512; persist(); }
+        }
+        _upRefreshPreview();
+      };
+
+      _upDims.onclick=()=>{
+        const d=_upDims._getDims();
+        if(!d.w||!d.h) return;
+        _upUseOrigSize=!_upUseOrigSize;
+        if(_upUseOrigSize){ S.upscalePreLonger=0; persist(); }
+        _upApplyPreState();
+      };
+
+      upscalePanel.append(_upSlotRow,_upUseOrigNote,_upResizeRow);
+
+      if(S.upscaleImage) _upSlot._restorePreview(S.upscaleImage);
+      _upApplyPreState();
+      _upRefreshPreview();
+
+      leftPanel.append(i2iPanel,editPanel,inpaintPanel,faceswapPanel,posePanel,upscalePanel,resSect,advPanel,seedRow,_seedLockedWarn,genRow);
 
       // ── RIGHT PANEL — Preview area fills available height ──
       const rightPanel=mk("div",{flex:"1",minWidth:"0",display:"flex",flexDirection:"column",overflow:"hidden"});
@@ -6854,7 +7108,8 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       const _comparerBeforeUrl=(snapMode,snapImg1,beforeUrlOverride)=>{
         if(snapMode==="pose"&&beforeUrlOverride) return beforeUrlOverride; // DWPose skeleton
         if(snapImg1 && (snapMode==="edit"||snapMode==="faceswap"||snapMode==="i2i"
-            ||snapMode==="sketch"||snapMode==="inpaint"||snapMode==="outpaint")){
+            ||snapMode==="sketch"||snapMode==="inpaint"||snapMode==="outpaint"
+            ||snapMode==="upscale")){
           return api.apiURL(`/view?filename=${encodeURIComponent(snapImg1)}&type=input&subfolder=`);
         }
         return null;
@@ -6914,13 +7169,13 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         position:"absolute",top:"calc(100% + 4px)",right:"0",
         background:C.bg1,border:`1px solid ${C.borderH}`,borderRadius:"8px",
         minWidth:"150px",overflowY:"auto",overflowX:"hidden",display:"none",zIndex:"200",
-        maxHeight:"min(360px, 70vh)",boxShadow:"0 4px 20px rgba(0,0,0,.7)",flexDirection:"column",
-        scrollbarWidth:"thin",scrollbarColor:`${C.border} transparent`,
+        maxHeight:"min(420px, 80vh)",boxShadow:"0 4px 20px rgba(0,0,0,.7)",flexDirection:"column",
+        scrollbarWidth:"thin",scrollbarColor:`${C.border} transparent`,padding:"3px 0",
       });
       // Compact rows so the whole list (incl. Pose) fits without overflowing.
-      const _mkPUSection=(label)=>{ const h=mk("div",{padding:"3px 12px 2px",fontSize:"8px",fontWeight:"700",letterSpacing:".08em",textTransform:"uppercase",color:C.muted,userSelect:"none"});tx(h,label);return h; };
-      const _mkPUItem=(label,icon,fn)=>{ const row=mk("div",{padding:"5px 12px",fontSize:"10px",fontWeight:"500",color:C.text,cursor:"pointer",display:"flex",alignItems:"center",gap:"7px",transition:"background .1s,color .1s",userSelect:"none"});const ico=mk("span",{fontSize:"11px",width:"14px",textAlign:"center",flexShrink:"0",color:C.muted});tx(ico,icon);const lbl=mk("span");tx(lbl,label);row.append(ico,lbl);row.onmouseenter=()=>{row.style.background="rgba(240,255,65,.10)";row.style.color=LIME;ico.style.color=LIME;};row.onmouseleave=()=>{row.style.background="";row.style.color=C.text;ico.style.color=C.muted;};row.onclick=()=>{previewUseDrop.style.display="none";_puDropOpen=false;fn();};return row; };
-      const _mkPUDivider=()=>mk("div",{height:"1px",background:C.border,margin:"1px 0"});
+      const _mkPUSection=(label)=>{ const h=mk("div",{padding:"2px 12px 1px",fontSize:"8px",fontWeight:"700",letterSpacing:".08em",textTransform:"uppercase",color:C.muted,userSelect:"none",lineHeight:"1.3"});tx(h,label);return h; };
+      const _mkPUItem=(label,icon,fn)=>{ const row=mk("div",{padding:"3px 12px",fontSize:"10px",fontWeight:"500",color:C.text,cursor:"pointer",display:"flex",alignItems:"center",gap:"7px",transition:"background .1s,color .1s",userSelect:"none",lineHeight:"1.4"});const ico=mk("span",{fontSize:"11px",width:"14px",textAlign:"center",flexShrink:"0",color:C.muted});tx(ico,icon);const lbl=mk("span");tx(lbl,label);row.append(ico,lbl);row.onmouseenter=()=>{row.style.background="rgba(240,255,65,.10)";row.style.color=LIME;ico.style.color=LIME;};row.onmouseleave=()=>{row.style.background="";row.style.color=C.text;ico.style.color=C.muted;};row.onclick=()=>{previewUseDrop.style.display="none";_puDropOpen=false;fn();};return row; };
+      const _mkPUDivider=()=>mk("div",{height:"1px",background:C.border,margin:"0"});
 
       const _getLastSrc=()=>_lastGenObj||(_galImages&&_galImages[0]);
       const _puUpload=async(fn)=>{ const v=_getLastSrc();if(!v)return;try{const n=await _uploadOutputToInput(v);fn(n);}catch(e){console.warn("[FluxKlein] use-as:",e);} };
@@ -6943,6 +7198,9 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         _mkPUSection("Pose"),
         _mkPUItem("Pose","◇",()=>_puUpload(n=>{setPill("pose");S.poseImage=n;_poseImgSlot._restorePreview(n);persist();})),
         _mkPUItem("Reference","◈",()=>_puUpload(n=>{setPill("pose");S.poseRef=n;_poseRefSlot._restorePreview(n);persist();})),
+        _mkPUDivider(),
+        _mkPUSection("Upscale"),
+        _mkPUItem("Upscale slot","↑",()=>_puUpload(n=>{setPill("upscale");S.upscaleImage=n;_upSlot._restorePreview(n);persist();})),
       );
 
       let _puDropOpen=false;
@@ -7055,7 +7313,9 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
           previewSaveBtn.style.display="none";
           placeholder.style.display="flex";
           _lastGenObj=null;
+          _lastResultWasUpscale=false;
           _pushOutput(null); // nothing shown → clear the downstream output
+          _refreshQuickUp();
         });
       };
 
@@ -7076,11 +7336,13 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       previewSaveBtn.onmouseleave=()=>previewSaveBtn.style.filter="";
 
       // ── Auto-save toggle (compact pill, bottom-right, left of Save/Delete; T2I only) ──
+      // height matches previewSaveBtn (28px) so the bottom-right pill row lines up.
       const autoSaveTog=mk("div",{
         position:"absolute",bottom:"10px",right:"10px",zIndex:"6",display:"none",
-        alignItems:"center",gap:"6px",cursor:"pointer",userSelect:"none",
+        alignItems:"center",gap:"6px",userSelect:"none",cursor:"pointer",
         background:"rgba(20,20,20,.78)",border:"1px solid rgba(255,255,255,.18)",
-        borderRadius:"7px",padding:"4px 9px",backdropFilter:"blur(4px)",
+        borderRadius:"8px",height:"28px",padding:"0 9px",boxSizing:"border-box",
+        backdropFilter:"blur(4px)",
       });
       const _asTrack=mk("div",{width:"26px",height:"14px",borderRadius:"7px",position:"relative",
         transition:"background .18s",flexShrink:"0"});
@@ -7101,15 +7363,66 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       _asApply();
       autoSaveTog.onclick=()=>{ S.autoSave=!(S.autoSave!==false); persist(); _asApply(); };
 
+      // ── Quick upscale (button + factor) — sits directly LEFT of the auto-save pill ──
+      // Upscales the image currently shown in the preview (in a batch, the selected one).
+      // Same pill styling as auto-save so the bottom-right cluster reads as one unit.
+      // Bottom-LEFT of the preview, same row/height as the auto-save + Save cluster on the
+      // right. The batch nav is centred, so nothing collides.
+      const quickUpWrap=mk("div",{
+        position:"absolute",bottom:"10px",left:"10px",zIndex:"6",display:"none",
+        alignItems:"center",gap:"7px",userSelect:"none",
+        background:"rgba(20,20,20,.78)",border:"1px solid rgba(255,255,255,.18)",
+        borderRadius:"8px",height:"28px",padding:"0 5px 0 9px",boxSizing:"border-box",
+        backdropFilter:"blur(4px)",
+      });
+      const quickUpBtn=mk("button",{
+        background:"transparent",border:"none",padding:"0",cursor:"pointer",outline:"none",
+        display:"flex",alignItems:"center",color:"rgba(255,255,255,.85)",
+        fontSize:"9px",fontWeight:"700",letterSpacing:".03em",whiteSpace:"nowrap",
+        transition:"color .15s",lineHeight:"1",
+      });
+      tx(quickUpBtn,"Upscale");
+      quickUpBtn.title="Upscale the image shown in the preview";
+      quickUpBtn.onmouseenter=()=>quickUpBtn.style.color=LIME;
+      quickUpBtn.onmouseleave=()=>quickUpBtn.style.color="rgba(255,255,255,.85)";
+      const quickUpDD=DD(["2x","4x","6x","8x"],`${S.quickUpscaleFactor||2}x`,v=>{
+        S.quickUpscaleFactor=parseInt(v)||2; persist();
+        if(typeof _quickUpUpdateDims==="function") _quickUpUpdateDims();
+      });
+      // DD's trigger is 28px tall by default — too tall for this compact pill. Shrink the
+      // trigger itself (not the wrapper) so its contents stay vertically centred.
+      quickUpDD.el.style.width="42px";
+      quickUpDD.el.style.flexShrink="0";
+      {
+        const _t=quickUpDD.el.firstChild;
+        if(_t){
+          _t.style.height="19px";
+          _t.style.padding="0 5px";
+          _t.style.borderRadius="5px";
+          const _txt=_t.firstChild;
+          if(_txt) _txt.style.fontSize="9px";
+        }
+      }
+      // Current size of the shown image → target size at the chosen factor. Without this it's
+      // easy to upscale an already-upscaled image again and hit a brutal resolution by accident.
+      const quickUpDims=mk("span",{
+        fontSize:"8px",color:"rgba(255,255,255,.5)",whiteSpace:"nowrap",letterSpacing:".02em",
+      });
+      quickUpWrap.append(quickUpBtn,quickUpDD.el,quickUpDims);
+
       // Toggle sits flush right (right:10px) when there's no Save/Delete button, and
       // shifts left (right:82px) only when one of them is shown, so it doesn't leave a
       // gap where those buttons would be. Watch their display and reposition.
+      // The quick-upscale pill then tracks the auto-save pill, staying just left of it.
       const _posAutoSaveTog=()=>{
         // No button → flush right. Delete is a narrow icon (~28px); Save is a wider
         // labelled button (~64px) — offset the toggle accordingly so there's no gap.
         if(previewSaveBtn.style.display!=="none")      autoSaveTog.style.right="82px";
         else if(previewDelBtn.style.display!=="none")  autoSaveTog.style.right="46px";
         else                                           autoSaveTog.style.right="10px";
+        // The upscale pill sits in its own row ABOVE the bottom strip, flush to the right edge
+        // (NOT tracking auto-save — that shifts left when Save/Delete appear, which would drag
+        // the pill out of alignment with the right edge).
       };
       _posAutoSaveTog();
       const _btnVisObserver=new MutationObserver(_posAutoSaveTog);
@@ -7127,7 +7440,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       // This matches how all of ComfyUI's node pipelines behave — no hidden "connected but
       // inactive" state to confuse the user.
 
-      previewBox.append(placeholder,finalImg,comparerWrap,previewUseWrap,previewSaveBtn,previewDelBtn,autoSaveTog,progWrap);
+      previewBox.append(placeholder,finalImg,comparerWrap,previewUseWrap,previewSaveBtn,previewDelBtn,quickUpWrap,autoSaveTog,progWrap);
       rightPanel.appendChild(previewBox);
 
       mainRow.append(leftPanel,rightPanel);
@@ -8544,7 +8857,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
 
       // ── GENERATION ────────────────────────────────────────────────────────
       const _resetGenBtn=()=>{
-        genBtn.disabled=false;tx(genBtn,"Generate");
+        genBtn.disabled=false;tx(genBtn,activePill==="upscale"?"Upscale":"Generate");
         genBtn.style.background=LIME;genBtn.style.backgroundSize="";
         genBtn.style.animation="none";genBtn.style.color="#111";
         genBtn.style.border="2px solid transparent";
@@ -8552,14 +8865,67 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         progWrap.style.display="none";
         if(_lastGenObj) previewDelBtn.style.display="flex";
         autoSaveTog.style.display="flex"; // restore after generating (all modes)
+        _refreshQuickUp();
       };
 
       const resetBtn=()=>{
         S.generating=false;S._pendingMeta=null;_activePromptId=null;
         S._preRunFiles=new Set();persist();_resetGenBtn();
+        // Quick upscale hides the batch nav while it runs. This path is the stop/error one
+        // (a successful run goes through showFinal, which clears the batch itself), so if the
+        // batch is still on screen bring its nav back rather than stranding those images.
+        if(_batchImgs.length>1) _batchNav.style.display="flex";
       };
 
       let _lastGenObj=null; // {filename, subfolder, type} of the currently shown image
+      // True when the shown image came out of an upscale run — hides the quick-upscale pill
+      // so it can't be chain-upscaled by accident (see _refreshQuickUp).
+      let _lastResultWasUpscale=false;
+
+      // Quick-upscale pill shows only when there's an image to upscale, and never in
+      // UPSCALE mode (that panel already has its own slot + factor) or mid-generation.
+      // Declared after _lastGenObj (which it reads); only ever called at runtime.
+      // Quick-upscale pill shows only when there's an image to upscale, and never in UPSCALE
+      // mode, mid-generation, or when the shown image IS an upscale result. Hiding it after an
+      // upscale stops accidental repeat passes (4x on an already-4x image is brutal) — to go
+      // again the user goes through "Use as… → Upscale slot", where the size is visible first.
+      function _refreshQuickUp(){
+        const show=!!_lastGenObj && !S.generating && activePill!=="upscale" && !_lastResultWasUpscale;
+        quickUpWrap.style.display=show?"flex":"none";
+        if(show){ _posAutoSaveTog(); _quickUpUpdateDims(); }
+      }
+
+      // Measure the shown image and display "W×H → W'×H'" for the chosen factor, so an
+      // already-upscaled image can't be blown up again unknowingly. Warns (amber) past 4K.
+      let _quickUpProbeSeq=0; // guards against a stale probe overwriting a newer one
+      function _quickUpUpdateDims(){
+        // Measure whatever quick-upscale would actually act on: _lastGenObj. Reading
+        // finalImg.src breaks in comparer modes (finalImg is hidden) and can lag a frame
+        // behind the new result.
+        const src=_lastGenObj;
+        // Cache-bust: successive results reuse filenames, so without this the browser hands
+        // back a cached older image and we'd report ITS size (the stale-dims bug).
+        const url=src&&src.filename
+          ? api.apiURL(`/view?filename=${encodeURIComponent(src.filename)}&type=${encodeURIComponent(src.type||"output")}&subfolder=${encodeURIComponent(src.subfolder||"")}&t=${Date.now()}`)
+          : "";
+        if(!url){ tx(quickUpDims,""); return; }
+        const f=Math.max(1,Math.min(8,+S.quickUpscaleFactor||2));
+        const seq=++_quickUpProbeSeq;
+        const probe=new Image();
+        probe.onload=()=>{
+          if(seq!==_quickUpProbeSeq) return; // a newer probe started — drop this result
+          const w=probe.naturalWidth,h=probe.naturalHeight;
+          if(!w||!h){ tx(quickUpDims,""); return; }
+          const nw=w*f,nh=h*f;
+          // Only the result size — the source size is already implied by what's on screen.
+          tx(quickUpDims,`→ ${nw}×${nh}`);
+          const heavy=(nw*nh)>(3840*2160); // beyond 4K gets slow / VRAM hungry
+          quickUpDims.style.color=heavy?"#f0a040":"rgba(255,255,255,.5)";
+          quickUpDims.title=heavy?"That's a very large result — it may be slow or run out of VRAM.":"";
+        };
+        probe.onerror=()=>{ if(seq===_quickUpProbeSeq) tx(quickUpDims,""); };
+        probe.src=url;
+      }
 
       // ── Image output (downstream) ─────────────────────────────────────────
       // Pushes the currently shown image to the Python backend (keyed by node id),
@@ -8637,6 +9003,8 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       const showFinal=(url,filename,subfolder)=>{
         if(_previewBlobUrl){ URL.revokeObjectURL(_previewBlobUrl); _previewBlobUrl=null; }
         clearError();S.generating=false;S.previewUrl=null;_activePromptId=null;persist();
+        // Read the snapshot BEFORE _resetGenBtn (which calls _refreshQuickUp).
+        _lastResultWasUpscale=(S._pendingMeta?.mode==="upscale");
         _resetGenBtn();
         if(soundEnabled)playDone();
         _galNeedsRefresh=true;
@@ -8663,6 +9031,9 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         }
         previewUseWrap.style.display="block";
         if(filename) previewDelBtn.style.display="flex";
+        // After the new image is in place — so the quick-upscale size readout measures the
+        // RESULT (e.g. the just-upscaled image), not the one it replaced.
+        _refreshQuickUp();
       };
 
       // ── T2I batch result: multiple images, click through them ─────────────
@@ -8684,6 +9055,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       const _batchCounter=mk("span",{fontSize:"10px",fontWeight:"700",color:"#fff",minWidth:"30px",textAlign:"center",letterSpacing:".03em"});
       _batchNav.append(_batchPrev,_batchCounter,_batchNext);
       previewBox.appendChild(_batchNav);
+
 
       // _batchTemp: when true, _batchImgs hold UNSAVED temp images (auto-save off).
       // Each entry may carry .saved=true once the user saves it.
@@ -8723,9 +9095,116 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         }
         // Keep the downstream output in sync with whichever batch image is shown.
         _pushOutput(_lastGenObj);
+        _refreshQuickUp(); // upscale acts on the selected batch image
       };
       _batchPrev.onclick=(e)=>{ e.stopPropagation(); _batchShow(_batchIdx-1); };
       _batchNext.onclick=(e)=>{ e.stopPropagation(); _batchShow(_batchIdx+1); };
+
+      // ── Quick upscale ─────────────────────────────────────────────────────
+      // Upscales whatever the preview currently shows. _lastGenObj always tracks the shown
+      // image (including the selected one in a batch), so this works for both. The result
+      // is saved to the gallery and shown in place, like a normal generation.
+      const _quickUpscaleRun=async()=>{
+        if(S.generating) return;
+        const src=_lastGenObj;
+        if(!src||!src.filename){ showError("Nothing to upscale yet — generate an image first."); return; }
+        if(!S.upscaleModel){ showError("UPSCALE: select an Upscale Model in Settings."); return; }
+        if(!S.upscaleVae){ showError("UPSCALE: select an Upscale VAE in Settings."); return; }
+
+        // The upscale workflow's LoadImage reads from the INPUT folder, but our result lives
+        // in output/temp — copy it over first and use the returned input-folder name.
+        let inputName;
+        try{
+          const r=await api.fetchApi("/flux_klein/stage_input",{
+            method:"POST",headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({filename:src.filename,subfolder:src.subfolder||"",type:src.type||"output"}),
+          });
+          const d=await r.json();
+          if(!d||!d.ok||!d.name) throw new Error(d&&d.error?d.error:"copy failed");
+          inputName=d.name;
+        }catch(e){ showError("Upscale: could not stage the image ("+fmtErr(e)+")"); return; }
+
+        let wfData;
+        try{
+          const r=await api.fetchApi("/flux_klein/workflow_upscale");
+          if(!r.ok) throw new Error("HTTP "+r.status);
+          wfData=await r.json();
+        }catch(e){ showError("Could not load upscale workflow (HTTP 404 = restart ComfyUI): "+fmtErr(e)); return; }
+
+        const p=JSON.parse(JSON.stringify(wfData));
+        const f=Math.max(1,Math.min(8,+S.quickUpscaleFactor||2));
+        p["FKU:img"].inputs.image=inputName;
+        p["FKU:unet"].inputs.unet_name=S.upscaleModel;
+        p["FKU:vae"].inputs.vae_name=S.upscaleVae;
+        p["FKU:resize"].inputs["resize_type.multiplier"]=f;
+        p["FKU:sampler"].inputs.seed=Math.floor(Math.random()*999999999999);
+        p["FKU:save"].inputs.filename_prefix="one-node-flux-2-klein/FK";
+        // Auto-save handling (the generate path's _applyAutoSave lives in another scope and
+        // works on its own `prompt`, so mirror its behaviour here on `p`).
+        _activeSaveNode="FKU:save";
+        if(S.autoSave===false){
+          const imgsRef=p["FKU:save"].inputs.images;
+          p["FKU:save"]={ class_type:"PreviewImage", inputs:{images:imgsRef}, _meta:{title:"Preview (unsaved)"} };
+        }
+
+        // Route completion through the normal single-image path.
+        _activeS=S; _activeShowFinal=showFinal; _activeShowFinalBatch=showFinalBatch;
+        _activeShowTemp=showTemp; _activeAutoSend=autoSend; _activeShowPreview=showPreview;
+        _activeResetBtn=resetBtn; _activeSetStage=setStage; _activeShowError=showError;
+        _activePromptIdRef=()=>_activePromptId;
+        _activeBatchN=1;
+        _oneNodeThrowawayForceClear();
+
+        // Metadata: record it as an upscale of the source image, with the RESULTING size.
+        // The source dims aren't known here (the image came from the gallery/preview), so
+        // measure the staged input and multiply by the factor. If the probe fails we still
+        // save the rest of the metadata rather than blocking the run.
+        let _upW=0,_upH=0;
+        try{
+          const dims=await new Promise((res)=>{
+            const im=new Image();
+            im.onload=()=>res({w:im.naturalWidth,h:im.naturalHeight});
+            im.onerror=()=>res(null);
+            im.src=api.apiURL(`/view?filename=${encodeURIComponent(inputName)}&type=input&subfolder=&t=${Date.now()}`);
+          });
+          if(dims){ _upW=dims.w*f; _upH=dims.h*f; }
+        }catch(e){}
+        S._pendingMeta={ v:1, prompt:"", mode:"upscale", upscaleFactor:f, image1:inputName, userLoras:[],
+          ...(_upW&&_upH?{w:_upW,h:_upH}:{}) };
+
+        try{
+          const prevR=await api.fetchApi("/flux_klein/gallery?offset=0&limit=200&subfolder=one-node-flux-2-klein");
+          const prevD=await prevR.json();
+          S._preRunFiles=new Set((prevD.images||[]).map(v=>v.key||((v.subfolder?`${v.subfolder}/`:"")+v.filename)));
+        }catch(e){ S._preRunFiles=new Set(); }
+
+        clearError();S.generating=true;
+        progWrap.style.display="flex";
+        setStage("Upscaling…",`${f}x`,0);
+        genBtn.disabled=true;tx(genBtn,"Upscaling…");
+        autoSaveTog.style.display="none";
+        quickUpWrap.style.display="none";
+        previewDelBtn.style.display="none";
+        previewSaveBtn.style.display="none";
+        _batchNav.style.display="none"; // the batch we came from isn't the upscale's result
+        // Show the Stop button, same as a normal generation.
+        requestAnimationFrame(()=>{
+          stopBtn.style.maxWidth="120px";stopBtn.style.minWidth="";stopBtn.style.width="";
+          stopBtn.style.opacity="1";stopBtn.style.padding="0 14px";stopBtn.style.marginLeft="6px";
+        });
+
+        try{
+          const resp=await api.fetchApi("/prompt",{
+            method:"POST",headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({prompt:p,client_id:api.clientId}),
+          });
+          const data=await resp.json();
+          if(data.error){ showError(fmtErr(data.error.message||data.error)); resetBtn(); return; }
+          _activePromptId=data.prompt_id||null;
+          console.log("[FluxKlein] upscale queued:",_activePromptId);
+        }catch(e){ showError("Upscale request failed: "+fmtErr(e)); resetBtn(); }
+      };
+      quickUpBtn.onclick=(e)=>{ e.stopPropagation(); _quickUpscaleRun(); };
 
       // Open the fullscreen overlay on the currently shown result (single or batch).
       // Renders an image, or a before/after comparer for comparer modes. Wires up the
@@ -8790,6 +9269,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       const showTemp=(images)=>{
         if(_previewBlobUrl){ URL.revokeObjectURL(_previewBlobUrl); _previewBlobUrl=null; }
         clearError();S.generating=false;S.previewUrl=null;_activePromptId=null;persist();
+        _lastResultWasUpscale=(S._pendingMeta?.mode==="upscale");
         _resetGenBtn();
         if(soundEnabled)playDone();
         placeholder.style.display="none";
@@ -8816,6 +9296,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       const showFinalBatch=(images)=>{
         if(_previewBlobUrl){ URL.revokeObjectURL(_previewBlobUrl); _previewBlobUrl=null; }
         clearError();S.generating=false;S.previewUrl=null;_activePromptId=null;persist();
+        _lastResultWasUpscale=(S._pendingMeta?.mode==="upscale");
         _resetGenBtn();
         if(soundEnabled)playDone();
         _galNeedsRefresh=true;
@@ -8882,8 +9363,15 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
           if(!_poseRefSlot.hasFile()){_slotErr(_poseRefSlot,_poseRefLbl);return;}
           if(!S.poseLora||S.poseLora==="none"){showError("POSE: select a Pose LoRA in Settings.");return;}
         }
+        if(activePill==="upscale"){
+          if(!_upSlot.hasFile()){_slotErr(_upSlot,_upSlotLbl);return;}
+          if(!S.upscaleModel){showError("UPSCALE: select an Upscale Model in Settings.");return;}
+          if(!S.upscaleVae){showError("UPSCALE: select an Upscale VAE in Settings.");return;}
+        }
         const _hasExtModel=(()=>{ const n=app.graph.getNodeById(_liveId()); const inputs=n?.inputs||[]; const slot=inputs.find(i=>i.name==="model"); return slot?.link!=null; })();
-        if(!S.model&&!_hasExtModel){showError("No model selected. Open Settings and choose a model.");return;}
+        // UPSCALE runs entirely on its own SeedVR2 model/VAE — it never touches the Flux model,
+        // so don't block it when no Flux model is selected.
+        if(activePill!=="upscale"&&!S.model&&!_hasExtModel){showError("No model selected. Open Settings and choose a model.");return;}
 
         // Make this node the active one for WS events — important when generation is
         // triggered programmatically (One Node chain poke) without a prior click/focus.
@@ -8896,6 +9384,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         _oneNodeThrowawayForceClear();
 
         clearError();S.generating=true;_poseSkeletonUrl=null;
+        _lastResultWasUpscale=false; // a fresh run's result is upscalable again
         _batchNav.style.display="none";_batchImgs=[];_batchTemp=false;
         previewSaveBtn.style.display="none";
 
@@ -8941,18 +9430,37 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         };
         const _promptInputText=_readPromptInputText();
         const _basePrompt=(_promptInputText!=null)?_promptInputText:(S.prompt||"");
+        // UPSCALE has no prompt/resolution controls: its output size is the source image
+        // scaled by the factor, and the source image is what we record as image1.
+        const _isUpscaleSnap=activePill==="upscale";
+        const _upSnapDims=(()=>{
+          if(!_isUpscaleSnap) return null;
+          const d=_upDims._getDims(); const f=+S.upscaleFactor||2;
+          if(!d.w||!d.h) return null;
+          // Mirror the pipeline: optional pre-resize, THEN ×factor — otherwise the saved
+          // size would be the un-shrunk source × factor, which isn't what gets produced.
+          let sw=d.w, sh=d.h;
+          const pre=_upUseOrigSize?0:(+S.upscalePreLonger||0);
+          if(pre>0){
+            const s=pre/Math.max(d.w,d.h);
+            sw=Math.max(16,Math.round(d.w*s)); sh=Math.max(16,Math.round(d.h*s));
+          }
+          return {w:sw*f,h:sh*f};
+        })();
         S._pendingMeta={
-          prompt:_basePrompt,
-          w:getEffectiveW(), h:getEffectiveH(),
+          prompt:_isUpscaleSnap?"":_basePrompt,
+          w:_upSnapDims?_upSnapDims.w:getEffectiveW(), h:_upSnapDims?_upSnapDims.h:getEffectiveH(),
           mode:_snapMode,
-          image1:activePill==="i2i"?(S.i2iImage||null):(_isPaintSnap?(_paintSlot.name||null):(_isFaceswapSnap?(S.fsTarget||null):(activePill==="pose"?(S.poseRef||null):(activePill==="edit"?(S.image1Name||null):null)))),
+          ...(_isUpscaleSnap?{upscaleFactor:+S.upscaleFactor||2}:{}),
+          image1:_isUpscaleSnap?(_upSlot.name||null):(activePill==="i2i"?(S.i2iImage||null):(_isPaintSnap?(_paintSlot.name||null):(_isFaceswapSnap?(S.fsTarget||null):(activePill==="pose"?(S.poseRef||null):(activePill==="edit"?(S.image1Name||null):null))))),
           i2iDenoise:activePill==="i2i"?S.i2iDenoise:undefined,
+          inpaintDenoise:(_isInpaintSnap&&+S.inpaintDenoise<1)?+S.inpaintDenoise:undefined,
           image2:(_isFaceswapSnap?(S.fsSource||null):(activePill==="pose"?(S.poseImage||null):(activePill==="edit"?(S.image2Name||null):null))),
           mask:_isInpaintSnap?(_maskName||null):null,
           outpaintExpand:_isOutpaintSnap?{top:_opTop,right:_opRight,bottom:_opBottom,left:_opLeft}:null,
           useSizeSource:(activePill==="edit")?(_useSizeSource||null):null,
-          userLoras:S.userLoras.filter(l=>l.name&&l.name!=="none"&&l.enabled!==false&&+(l.strength||0)>0).map(l=>({n:l.name.split(/[\\/]/).pop(),s:l.strength})),
-          ...(S.advancedUI?{steps:S.steps||4, cfg:S.cfg!==undefined?S.cfg:1,
+          userLoras:_isUpscaleSnap?[]:S.userLoras.filter(l=>l.name&&l.name!=="none"&&l.enabled!==false&&+(l.strength||0)>0).map(l=>({n:l.name.split(/[\\/]/).pop(),s:l.strength})),
+          ...((S.advancedUI&&!_isUpscaleSnap)?{steps:S.steps||4, cfg:S.cfg!==undefined?S.cfg:1,
             sampler:S.sampler||"er_sde", scheduler:S.scheduler||"simple",
             advancedUI:true}:{}),
           seed:S.seed||0, randomizeSeed:S.randomizeSeed,
@@ -8973,6 +9481,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         genBtn.style.color=LIME;genBtn.style.border="2px solid transparent";
         previewDelBtn.style.display="none";
         autoSaveTog.style.display="none"; // hidden while generating; restored on completion
+        quickUpWrap.style.display="none";
         requestAnimationFrame(()=>{
           stopBtn.style.maxWidth="120px";stopBtn.style.minWidth="";stopBtn.style.width="";stopBtn.style.opacity="1";stopBtn.style.padding="0 14px";stopBtn.style.marginLeft="6px";
         });
@@ -8991,12 +9500,14 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         const isFaceswapMode=activePill==="faceswap";
         const isI2IMode=activePill==="i2i";
         const isPoseMode=activePill==="pose";
+        const isUpscaleMode=activePill==="upscale";
         let wfUrl;
         if(activePill==="edit"||isSketchMode) wfUrl="/flux_klein/workflow_edit";
         else if(isInpaintMode) wfUrl="/flux_klein/workflow_inpaint";
         else if(isOutpaintMode) wfUrl="/flux_klein/workflow_outpaint";
         else if(isFaceswapMode) wfUrl="/flux_klein/workflow_faceswap";
         else if(isPoseMode) wfUrl="/flux_klein/workflow_pose";
+        else if(isUpscaleMode) wfUrl="/flux_klein/workflow_upscale";
         else if(isI2IMode) wfUrl="/flux_klein/workflow_i2i";
         else wfUrl="/flux_klein/workflow_t2i";
 
@@ -9037,7 +9548,8 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         // (InpaintCropImproved + InpaintStitchImproved). Outpaint is exported as an inpaint mask
         // and routed there (see _maskName==="__outpaint__" handling), so it hits the same
         // single-stitcher limit — InpaintStitchImproved handles one stitcher/image only.
-        const _batchN=()=>(isInpaintMode||isOutpaintMode)?1:Math.max(1,Math.min(4,+S.batchCount||1));
+        // Inpaint/outpaint: single-stitcher limit. Upscale: one source image in, one out.
+        const _batchN=()=>(isInpaintMode||isOutpaintMode||isUpscaleMode)?1:Math.max(1,Math.min(4,+S.batchCount||1));
         // Snapshot the batch size actually used for THIS submission, so the completion handler
         // routes the result set by this value rather than the live S.batchCount (which the user
         // may change mid-run).
@@ -9128,8 +9640,38 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
           return prev;
         };
 
+        // ── UPSCALE workflow patching (SeedVR2) ─────────────────────────────
+        // Standalone path: its own model + VAE, no prompt, no LoRAs, no KV cache, no batch.
+        // The scale factor drives ResizeImageMaskNode; SeedVR2 then restores detail.
+        if(isUpscaleMode){
+          set("FKU:img","image",_upSlot.name||"example.png");
+          set("FKU:unet","unet_name",S.upscaleModel);
+          set("FKU:vae","vae_name",S.upscaleVae);
+          set("FKU:resize","resize_type.multiplier",Math.max(1,Math.min(8,+S.upscaleFactor||2)));
+          set("FKU:sampler","seed",Math.floor(Math.random()*999999999999));
+          set("FKU:save","filename_prefix","one-node-flux-2-klein/FK");
+          _applyAutoSave("FKU:save");
+
+          // Optional pre-resize: shrink the source BEFORE the ×factor pass. Injected between
+          // LoadImage and JoinImageWithAlpha so image and alpha stay the same size.
+          const _preL=_upUseOrigSize?0:(+S.upscalePreLonger||0);
+          if(_preL>0){
+            const d=_upDims._getDims();
+            if(d.w&&d.h&&Math.max(d.w,d.h)!==_preL){
+              const s=_preL/Math.max(d.w,d.h);
+              const pw=Math.max(16,Math.round(d.w*s));
+              const ph=Math.max(16,Math.round(d.h*s));
+              prompt["FKU:pre_scale"]={
+                class_type:"ImageScale",
+                inputs:{image:["FKU:img",0],upscale_method:"lanczos",width:pw,height:ph,crop:"disabled"},
+                _meta:{title:"Pre-resize source"},
+              };
+              prompt["FKU:join"].inputs.image=["FKU:pre_scale",0];
+            }
+          }
+
         // ── INPAINT workflow patching ───────────────────────────────────────
-        if(isInpaintMode){
+        } else if(isInpaintMode){
           const WFI={
             model:"FKI:194", kv:"FKI:216", textEnc:"FKI:195", vae:"FKI:196",
             promptPos:"FKI:6", promptNeg:"FKI:190",
@@ -9150,6 +9692,28 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
           // chain the extra ReferenceLatent pair (FKI:204b/205b) into InpaintModelConditioning
           // so the model sees the reference alongside the cropped source context. When absent,
           // strip the ref nodes entirely so ComfyUI doesn't fail loading the placeholder image.
+          //
+          // Guard against a STALE reference (issue #48): S.inpaintRefName persists across
+          // sessions, but ComfyUI's input/ folder does not — an uploaded reference can be gone
+          // on a later run. Taking the reference branch then submits a LoadImage for a missing
+          // file, which ComfyUI reports as "Exception when validating inner node: 'FKI:204b'".
+          // So verify the file still exists first; if not, drop it and fall back to plain inpaint.
+          if(_paintRefName){
+            let _refExists=true;
+            try{
+              const _rr=await fetch(
+                api.apiURL(`/view?filename=${encodeURIComponent(_paintRefName)}&type=input&subfolder=&t=${Date.now()}`),
+                {method:"GET",cache:"no-store"}
+              );
+              _refExists=_rr.ok;
+            }catch(e){ _refExists=false; }
+            if(!_refExists){
+              // Reference file is gone — clear the stale state and continue as plain inpaint.
+              _paintRefName=null;
+              S.inpaintRefName=null; persist();
+              try{ _refSlot._restorePreview(null); }catch(e){}
+            }
+          }
           if(_paintRefName){
             set("FKI:ref2img","image",_paintRefName);
             prompt["FKI:210"].inputs.positive=["FKI:204b",0];
@@ -9249,6 +9813,10 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
           // Seam feather — how far the fill blends into the original at the mask edge.
           // 0 = Auto: leave the workflow default (32px) untouched. >0 overrides it.
           if(+S.inpFeather>0) set(WFI.crop,"mask_blend_pixels",Math.min(64,+S.inpFeather));
+
+          // Denoise — how much of the masked area is regenerated. Default 1.0 = full
+          // repaint (unchanged behaviour); lower keeps more of the original under the mask.
+          set(WFI.sampler,"denoise",Math.max(0,Math.min(1,S.inpaintDenoise!==undefined?+S.inpaintDenoise:1.0)));
 
         } else if(isOutpaintMode){
           // outpaint_workflow.json receives:
@@ -9653,17 +10221,44 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       };
 
       // ── PILL VISIBILITY ───────────────────────────────────────────────────
+      // UPSCALE keeps the full layout (prompt box, seed row, batch, advanced) so switching
+      // modes doesn't reflow the panel and both layouts keep working — the controls SeedVR2
+      // doesn't use are just dimmed and made inert.
+      const _setUpscaleDisabled=(off)=>{
+        const dim=(el,disabled)=>{
+          if(!el) return;
+          el.style.opacity=disabled?"0.35":"";
+          el.style.pointerEvents=disabled?"none":"";
+        };
+        dim(promptWrap,off);
+        dim(seedRow,off);
+        dim(_batchWrap,off);
+        dim(advPanel,off);
+        if(promptTA) promptTA.disabled=!!off;
+      };
+
       function updatePillVisibility(){
+        const isUpscale=activePill==="upscale";
         i2iPanel.style.display=activePill==="i2i"?"flex":"none";
         editPanel.style.display=activePill==="edit"?"flex":"none";
         inpaintPanel.style.display=activePill==="inpaint"?"flex":"none";
         faceswapPanel.style.display=activePill==="faceswap"?"flex":"none";
         posePanel.style.display=activePill==="pose"?"flex":"none";
+        upscalePanel.style.display=isUpscale?"flex":"none";
         if(activePill==="pose") _poseApplyBadges();
-        resSect.style.display=(activePill==="inpaint"||activePill==="faceswap"||activePill==="i2i"||activePill==="pose")?"none":"flex";
-        // Batch split-button, auto-save toggle and send-output toggle: every mode.
+        resSect.style.display=(activePill==="inpaint"||activePill==="faceswap"||activePill==="i2i"||activePill==="pose"||isUpscale)?"none":"flex";
+        // UPSCALE takes no prompt, no seed and no sampler settings (SeedVR2 is a fixed
+        // 1-step pass), and it can't batch. Keep those controls in place but DISABLED so the
+        // layout stays identical across modes (and both layout options keep working).
+        // Batch split-button: shown in every mode (it starts hidden), dimmed in UPSCALE.
         _batchWrap.style.display="block";
+        _setUpscaleDisabled(isUpscale);
+        if(!S.generating) tx(genBtn,isUpscale?"Upscale":"Generate");
+        // Mirror _advRefresh()'s rules (advanced panel is dimmed, not hidden, in UPSCALE).
+        if(_seedLockedWarn) _seedLockedWarn.style.display=(!isUpscale&&!S.advancedUI&&!S.randomizeSeed)?"flex":"none";
+        if(advPanel) advPanel.style.display=S.advancedUI?"flex":"none";
         autoSaveTog.style.display="flex";
+        _refreshQuickUp();
         updateSizeControls();
         if(typeof _refreshPaintBatchNote==="function") _refreshPaintBatchNote();
       }
@@ -9734,6 +10329,9 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         _mkGalCtxSec("Pose"),
         _mkGalCtxItem("Pose","◇",()=>{ if(_galCtxImg)_loadIntoPoseSlot(_galCtxImg,"pose"); }),
         _mkGalCtxItem("Reference","◈",()=>{ if(_galCtxImg)_loadIntoPoseSlot(_galCtxImg,"ref"); }),
+        _mkGalCtxDiv(),
+        _mkGalCtxSec("Upscale"),
+        _mkGalCtxItem("Upscale slot","↑",()=>{ if(_galCtxImg)_loadIntoUpscaleSlot(_galCtxImg); }),
       );
       document.body.appendChild(_galCtxMenu);
       document.addEventListener("click",()=>{ _galCtxMenu.style.display="none"; });
@@ -10049,15 +10647,15 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         position:"absolute",bottom:"calc(100% + 5px)",left:"0",
         background:C.bg1,border:`1px solid ${C.borderH}`,borderRadius:"8px",
         minWidth:"170px",overflowY:"auto",overflowX:"hidden",display:"none",zIndex:"200",
-        maxHeight:"min(360px, 70vh)",boxShadow:"0 4px 20px rgba(0,0,0,.7)",flexDirection:"column",
-        scrollbarWidth:"thin",scrollbarColor:`${C.border} transparent`,
+        maxHeight:"min(420px, 80vh)",boxShadow:"0 4px 20px rgba(0,0,0,.7)",flexDirection:"column",
+        scrollbarWidth:"thin",scrollbarColor:`${C.border} transparent`,padding:"3px 0",
       });
 
       // Section header inside dropdown
       const _mkDropSection=(label)=>{
         const h=mk("div",{
-          padding:"6px 12px 3px",fontSize:"8px",fontWeight:"700",letterSpacing:".08em",
-          textTransform:"uppercase",color:C.muted,userSelect:"none",
+          padding:"2px 12px 1px",fontSize:"8px",fontWeight:"700",letterSpacing:".08em",
+          textTransform:"uppercase",color:C.muted,userSelect:"none",lineHeight:"1.3",
         });
         tx(h,label);return h;
       };
@@ -10065,9 +10663,9 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       // Clickable slot item inside dropdown
       const _mkDropItem=(label,icon,onClick)=>{
         const row=mk("div",{
-          padding:"7px 12px",fontSize:"10px",fontWeight:"500",color:C.text,
+          padding:"3px 12px",fontSize:"10px",fontWeight:"500",color:C.text,
           cursor:"pointer",display:"flex",alignItems:"center",gap:"7px",
-          transition:"background .1s,color .1s",userSelect:"none",
+          transition:"background .1s,color .1s",userSelect:"none",lineHeight:"1.4",
         });
         const ico=mk("span",{fontSize:"11px",width:"14px",textAlign:"center",flexShrink:"0",color:C.muted});
         tx(ico,icon);
@@ -10080,7 +10678,7 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       };
 
       // Thin divider between sections
-      const _mkDropDivider=()=>mk("div",{height:"1px",background:C.border,margin:"2px 0"});
+      const _mkDropDivider=()=>mk("div",{height:"1px",background:C.border,margin:"0"});
 
       // Build dropdown items
       _lbUseDrop.append(
@@ -10101,6 +10699,9 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         _mkDropSection("Pose"),
         _mkDropItem("Pose","◇",()=>{ const v=_lbActiveImg;if(v)_loadIntoPoseSlot(v,"pose"); }),
         _mkDropItem("Reference","◈",()=>{ const v=_lbActiveImg;if(v)_loadIntoPoseSlot(v,"ref"); }),
+        _mkDropDivider(),
+        _mkDropSection("Upscale"),
+        _mkDropItem("Upscale slot","↑",()=>{ const v=_lbActiveImg;if(v)_loadIntoUpscaleSlot(v); }),
       );
 
       let _lbDropOpen=false;
@@ -10384,6 +10985,8 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
             if(meta.image2){ const n=await _ri(meta.image2); if(n){S.fsSource=n;_fsSourceSlot._restorePreview(n);} }
           } else if(mode==="sketch"||mode==="inpaint"||mode==="outpaint"){
             if(meta.image1){ const n=await _ri(meta.image1); if(n){ _sketchSaving=true;_paintSlot._restorePreview(n);_sketchSaving=false; } }
+            // Inpaint denoise (slider re-syncs from S when the mask editor opens)
+            S.inpaintDenoise=(mode==="inpaint"&&meta.inpaintDenoise!==undefined)?Math.max(0,Math.min(1,+meta.inpaintDenoise)):1.0;
           }
           // Advanced params — only restore if explicitly saved with advancedUI:true
           if(meta.advancedUI===true){
@@ -10572,6 +11175,17 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
         } else {
           S.poseImage=inputName; _poseImgSlot._restorePreview(inputName);
         }
+        persist();
+        lightbox.style.display="none";_lbActiveImg=null;
+        closeOverlayFade(galleryOverlay);
+      };
+
+      const _loadIntoUpscaleSlot=async(v)=>{
+        if(activePill!=="upscale") setPill("upscale");
+        let inputName;
+        try{ inputName=await _uploadOutputToInput(v); }
+        catch(err){ console.warn("[FluxKlein] load-into-upscale:",err); inputName=v.filename; }
+        S.upscaleImage=inputName; _upSlot._restorePreview(inputName);
         persist();
         lightbox.style.display="none";_lbActiveImg=null;
         closeOverlayFade(galleryOverlay);
@@ -11053,6 +11667,8 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
           targetSlot=!_fsTargetSlot.hasFile()?_fsTargetSlot:_fsSourceSlot;
         } else if(activePill==="pose"){
           targetSlot=!_poseImgSlot.hasFile()?_poseImgSlot:_poseRefSlot;
+        } else if(activePill==="upscale"){
+          targetSlot=_upSlot;
         }
         if(targetSlot) targetSlot.loadFile(file);
       },{capture:true});
@@ -11128,6 +11744,27 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
           };
           poseLoraF.dd.updateItems(loraOpts);
           { const m=_matchLora(S.poseLora||""); if(m&&m!=="none"){poseLoraF.dd.set(m);S.poseLora=m;} else{poseLoraF.dd.set("none");S.poseLora="";} }
+          // Upscaler dropdowns — the SeedVR2 model lives in diffusion_models and its VAE in vae,
+          // so they reuse the same scans; keyword auto-select only when nothing is saved yet.
+          {
+            const nd=(s)=>(s||"").replace(/\\/g,"/").toLowerCase();
+            const _matchIn=(list,want)=>{
+              if(!want||!list.length) return "";
+              return list.find(o=>nd(o)===nd(want))||
+                list.find(o=>nd(o).split("/").pop()===nd(want).split("/").pop())||"";
+            };
+            const upModelOpts=["none",...modelList];
+            upModelF.dd.updateItems(upModelOpts);
+            const upM=_matchIn(modelList,S.upscaleModel)||
+              (S.upscaleModel?"":(modelList.find(f=>nd(f).includes("seedvr"))||""));
+            if(upM){ upModelF.dd.set(upM); S.upscaleModel=upM; } else { upModelF.dd.set("none"); S.upscaleModel=""; }
+
+            const upVaeOpts=["none",...vaeList];
+            upVaeF.dd.updateItems(upVaeOpts);
+            const upV=_matchIn(vaeList,S.upscaleVae)||
+              (S.upscaleVae?"":(vaeList.find(f=>nd(f).includes("ema_vae"))||""));
+            if(upV){ upVaeF.dd.set(upV); S.upscaleVae=upV; } else { upVaeF.dd.set("none"); S.upscaleVae=""; }
+          }
           persist();
         })
         .catch(e=>console.warn("[FluxKlein] models:",e));
