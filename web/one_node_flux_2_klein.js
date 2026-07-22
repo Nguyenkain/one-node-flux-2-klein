@@ -7329,7 +7329,6 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       if(S.poseRef)   _poseRefSlot._restorePreview(S.poseRef);
 
 
-      leftPanel.append(i2iPanel,editPanel,inpaintPanel,faceswapPanel,posePanel,resSect,advPanel,seedRow,_seedLockedWarn,genRow);
       // llmPanel appended below after its definition
 
       // ── UPSCALE PANEL ─────────────────────────────────────────────────────
@@ -8105,12 +8104,8 @@ width:"34px",background:C.bg2,border:`1px solid ${C.border}`,borderRadius:"4px",
       // This matches how all of ComfyUI's node pipelines behave — no hidden "connected but
       // inactive" state to confuse the user.
 
-
-      previewBox.append(placeholder,finalImg,comparerWrap,previewUseWrap,previewSaveBtn,previewDelBtn,previewZoomBtn,autoSaveTog,progWrap,postActionRow);
+      previewBox.append(placeholder,finalImg,comparerWrap,previewUseWrap,previewSaveBtn,previewDelBtn,previewZoomBtn,quickUpWrap,autoSaveTog,progWrap,postActionRow);
       rightPanel.append(previewBox,previewDimsLbl);
-
-      previewBox.append(placeholder,finalImg,comparerWrap,previewUseWrap,previewSaveBtn,previewDelBtn,quickUpWrap,autoSaveTog,progWrap);
-      rightPanel.appendChild(previewBox);
 
 
       mainRow.append(leftPanel,rightPanel);
