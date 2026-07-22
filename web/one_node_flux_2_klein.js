@@ -1807,10 +1807,8 @@ app.registerExtension({
       };
       _loadPresetsRemote();
 
-      settingsOverlay.append(settHdr,_presetSect,familyRow,modGrid,kreaModelGrid,_kvNote,_baseNote,modGrid2,modGrid3,llmTitle,modGridLLM,prefTitle,soundToggle.el,advUIToggle.el,extLoadersToggle.el,_dsRow);
+      settingsOverlay.append(settHdr,_presetSect,familyRow,modGrid,kreaModelGrid,_kvNote,_baseNote,modGrid2,modGrid3,_loraBox,_upBox,llmTitle,modGridLLM,prefTitle,soundToggle.el,advUIToggle.el,extLoadersToggle.el,_dsRow);
       _applyModelFamilyUI();
-
-      settingsOverlay.append(settHdr,modGrid,_kvNote,_baseNote,_loraBox,_upBox,prefTitle,soundToggle.el,advUIToggle.el,extLoadersToggle.el,_dsRow);
 
 
       // ── Overlay helpers ───────────────────────────────────────────────────
@@ -10873,7 +10871,7 @@ ${base}`;
         // ── UPSCALE workflow patching (SeedVR2) ─────────────────────────────
         // Standalone path: its own model + VAE, no prompt, no LoRAs, no KV cache, no batch.
         // The scale factor drives ResizeImageMaskNode; SeedVR2 then restores detail.
-        if(isUpscaleMode){
+        } else if(isUpscaleMode){
           set("FKU:img","image",_upSlot.name||"example.png");
           set("FKU:unet","unet_name",S.upscaleModel);
           set("FKU:vae","vae_name",S.upscaleVae);
@@ -11477,29 +11475,20 @@ ${base}`;
       function updatePillVisibility(){
 
         const isKrea=S.modelFamily==="krea";
+        const isUpscale=activePill==="upscale";
         if(_refreshPromptModeUI) _refreshPromptModeUI();
         i2iPanel.style.display=activePill==="i2i"?"flex":"none";
         editPanel.style.display=!isKrea&&activePill==="edit"?"flex":"none";
         inpaintPanel.style.display=!isKrea&&activePill==="inpaint"?"flex":"none";
         faceswapPanel.style.display=!isKrea&&activePill==="faceswap"?"flex":"none";
         posePanel.style.display=!isKrea&&activePill==="pose"?"flex":"none";
+        upscalePanel.style.display=!isKrea&&isUpscale?"flex":"none";
         if(!isKrea&&activePill==="pose") _poseApplyBadges();
         llmPanel.style.display=activePill==="llm"?"flex":"none";
         llmCopyToClip.style.display=activePill==="llm"?"":"none";
         _promptEnhanceBtn.style.display=(activePill==="t2i"||activePill==="i2i"||(!isKrea&&(activePill==="inpaint"||activePill==="edit")))?"flex":"none";
         postActionRow.style.display=(activePill==="llm"||!_lastGenObj)?"none":"flex";
-        resSect.style.display=((!isKrea&&(activePill==="inpaint"||activePill==="faceswap"||activePill==="pose"))||activePill==="i2i"||activePill==="llm")?"none":"flex";
-        // Batch split-button, auto-save toggle and send-output toggle: every mode.
-
-        const isUpscale=activePill==="upscale";
-        i2iPanel.style.display=activePill==="i2i"?"flex":"none";
-        editPanel.style.display=activePill==="edit"?"flex":"none";
-        inpaintPanel.style.display=activePill==="inpaint"?"flex":"none";
-        faceswapPanel.style.display=activePill==="faceswap"?"flex":"none";
-        posePanel.style.display=activePill==="pose"?"flex":"none";
-        upscalePanel.style.display=isUpscale?"flex":"none";
-        if(activePill==="pose") _poseApplyBadges();
-        resSect.style.display=(activePill==="inpaint"||activePill==="faceswap"||activePill==="i2i"||activePill==="pose"||isUpscale)?"none":"flex";
+        resSect.style.display=((!isKrea&&(activePill==="inpaint"||activePill==="faceswap"||activePill==="pose"||isUpscale))||activePill==="i2i"||activePill==="llm")?"none":"flex";
         // UPSCALE takes no prompt, no seed and no sampler settings (SeedVR2 is a fixed
         // 1-step pass), and it can't batch. Keep those controls in place but DISABLED so the
         // layout stays identical across modes (and both layout options keep working).
