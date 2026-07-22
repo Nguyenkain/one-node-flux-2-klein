@@ -520,6 +520,7 @@ let _activeShowFinalBatch=null; // T2I batch: called with an array of {filename,
 let _activeShowTemp=null; // auto-save off: called with array of temp {filename, subfolder, type}
 let _activeSaveNode=null; // auto-save off: id of the current mode's save node (now a PreviewImage)
 let _activeAutoSend=null; // ()=>{} run after a result is shown, to push the image downstream
+let _activeBatchN=1; // batch size snapshotted at Generate-click time, read by the completion handler
 
 // Registry of all live FluxKlein nodes, keyed by graph id (kept for cleanup on remove).
 const _fkNodes = {};
