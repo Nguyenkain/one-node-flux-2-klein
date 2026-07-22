@@ -13323,6 +13323,7 @@ ${base}`;
       const _fkTriggerGenerate=()=>{ if(!S.generating) genBtn.click(); };
 
       if(!window.__fluxklein_nodes) window.__fluxklein_nodes={};
+      window.__fluxklein_ver=FK_CACHE_VER;
       window.__fluxklein_nodes[this.id]={
         root,S,currentNode:this, // currentNode is repointed on workflow-switch reuse; _liveId() reads it
         fns:{showFinal,showFinalBatch,showTemp,showPreview,resetBtn,setStage,showError,clearError,poseSkeleton,autoSend,getPromptId:()=>_activePromptId,triggerGenerate:_fkTriggerGenerate},
