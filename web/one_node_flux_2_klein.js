@@ -842,10 +842,9 @@ app.registerExtension({
         const _cnode=this;
         this.addDOMWidget("fk_ui","div",cached.root,{
           getValue(){return null;},setValue(){},serialize:false,
-          // canvasOnly (classic mode only): keeps this huge UI widget on the graph canvas so the
-          // Parameters side-panel can't steal it (collapsing-right-panel bug). In Nodes 2.0 the
-          // Vue renderer skips canvasOnly widgets → blank node, so we must NOT set it there.
-          canvasOnly:!_isVueNodes(),
+          // ponytail: force visible in both classic + Vue nodes. If parameters-panel steal
+          // returns in classic, restore conditional canvasOnly with verified detection path.
+          canvasOnly:false,
           computeSize(){
             const slotH=(LiteGraph.NODE_SLOT_HEIGHT||20);
             const rows=Math.max((_cnode.inputs||[]).length,(_cnode.outputs||[]).length);
@@ -13282,10 +13281,9 @@ ${base}`;
       // and the image output weren't accounted for and the UI overflowed the bottom.
       this.addDOMWidget("fk_ui","div",root,{
         getValue(){return null;},setValue(){},serialize:false,
-        // canvasOnly (classic mode only): keeps this huge UI widget on the graph canvas so the
-        // Parameters side-panel can't steal it (collapsing-right-panel bug). In Nodes 2.0 the
-        // Vue renderer skips canvasOnly widgets → blank node, so we must NOT set it there.
-        canvasOnly:!_isVueNodes(),
+        // ponytail: force visible in both classic + Vue nodes. If parameters-panel steal
+        // returns in classic, restore conditional canvasOnly with verified detection path.
+        canvasOnly:false,
         computeSize(){
           const slotH=(LiteGraph.NODE_SLOT_HEIGHT||20);
           const rows=Math.max((self.inputs||[]).length,(self.outputs||[]).length);
