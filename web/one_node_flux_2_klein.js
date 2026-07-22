@@ -817,6 +817,8 @@ app.registerExtension({
       this.addOutput("image","IMAGE");
 
       if(!window.__fluxklein_nodes) window.__fluxklein_nodes={};
+      const FK_CACHE_VER="v2";
+      if(window.__fluxklein_ver!==FK_CACHE_VER){ window.__fluxklein_nodes={}; window.__fluxklein_ver=FK_CACHE_VER; }
       const nodeId=this.id;
       const cached=window.__fluxklein_nodes[nodeId];
       if(cached){
@@ -2134,7 +2136,7 @@ app.registerExtension({
 
       // ── PILLS ─────────────────────────────────────────────────────────────
       let activePill=S.pill||"t2i";
-      const _allowedPills=()=>S.modelFamily==="krea"?["t2i","i2i","llm"]:["t2i","i2i","edit","inpaint","faceswap","pose","llm"];
+      const _allowedPills=()=>S.modelFamily==="krea"?["t2i","i2i","llm"]:["t2i","i2i","edit","inpaint","faceswap","pose","upscale","llm"];
       if(!_allowedPills().includes(activePill)) activePill="t2i";
 
       const pillT2I     =Pill("T2I",     activePill==="t2i",      ()=>setPill("t2i"));
