@@ -1477,14 +1477,8 @@ app.registerExtension({
         return window.__fkCustomTriggers[base]||"";
       };
 
-
-      // Row 2: Faceswap LoRA + Pose LoRA + Remove BG model
-      const modGrid2=mk("div",{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"8px",marginBottom:"16px"});
-      const fsLoraF=mkModDD("Faceswap LoRA","/models/loras",S.fsLora,v=>{S.fsLora=v;persist();});
-
       // ── Workflow LoRAs box ────────────────────────────────────────────────
-      // The three LoRAs used internally by the mode workflows (Faceswap, and the
-      // two Pose phases) grouped in one subtly bordered box so it reads as a unit.
+      const modGrid2=mk("div",{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"8px",marginBottom:"16px"});
       // Normalise "none" to "" on the way in (same as Pose LoRA below). Storing the literal
       // string "none" made the restore below reject it as "no selection" forever after.
       const fsLoraF=mkModDD("Faceswap LoRA","/models/loras",S.fsLora||"none",v=>{S.fsLora=v==="none"?"":v;persist();});
