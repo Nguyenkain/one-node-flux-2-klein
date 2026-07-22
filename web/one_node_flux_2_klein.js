@@ -803,7 +803,10 @@ let _activeSetStage=null;
 app.registerExtension({
   name:"FluxKleinPlayground.v1",
   async beforeRegisterNodeDef(nodeType,nodeData){
-    if(nodeData.name!=="FluxKleinOneNode") return;
+    const _fkNodeName=String(nodeData?.name||nodeData?.display_name||nodeData?.title||"");
+    const _fkModule=String(nodeData?.python_module||nodeData?.category||"");
+    if(_fkNodeName!=="FluxKleinOneNode"&&!_fkNodeName.includes("FLUX.2")&&!_fkModule.includes("one-node-flux-2-klein")) return;
+    console.info("[FluxKlein] patch node",nodeData);
 
 
     nodeType.prototype.onNodeCreated=function(){
