@@ -9775,21 +9775,8 @@ ${base}`;
         if(S.modelFamily==="krea"&&S.kreaPromptMode==="builder"&&activePill==="t2i") _bootstrapPb();
         else _refreshPromptModeUI();
       }
-      // ── Krea control bar (below prompt wrap, visible for Krea T2I/I2I) ─────
-      const _kreaCtrlBar=mk("div",{display:"none",flexDirection:"column",gap:"6px",marginTop:"4px"});
-      const _kreaCtrlBarRow=mk("div",{display:"flex",alignItems:"center",gap:"8px"});
-      const _kreaCtrlRebLbl=mk("span",{fontSize:"10px",color:C.muted,fontWeight:"700",letterSpacing:".05em",flexShrink:"0"});
-      tx(_kreaCtrlRebLbl,"Enhancer:");
-      const _kreaCtrlRebInp=NI("",S.kreaEnhancerStrength,0,2,0.05,v=>{S.kreaEnhancerStrength=v;persist();},"64px");
-      _kreaCtrlRebInp._inp.style.color=LIME;_kreaCtrlRebInp._inp.style.fontWeight="700";
-      const _kreaCtrlBypassToggle=Toggle("Enable enhancer",S.kreaEnhancerEnabled!==false,v=>{S.kreaEnhancerEnabled=v;persist();});
-      _kreaCtrlBarRow.append(_kreaCtrlRebLbl,_kreaCtrlRebInp,_kreaCtrlBypassToggle.el);
-      _kreaCtrlBar.appendChild(_kreaCtrlBarRow);
-      _refreshKreaCtrlBar=()=>{
-        _kreaCtrlBar.style.display=(S.modelFamily==="krea"&&(activePill==="t2i"||activePill==="i2i"))?"flex":"none";
-      };
-      _refreshKreaCtrlBar();
-      promptWrap.appendChild(_kreaCtrlBar);
+      // Krea2T Enhancer removed (incompatible with ComfyUI Krea2 forward signature).
+      _refreshKreaCtrlBar=()=>{};
 
       // ── Prompt expand overlay ─────────────────────────────────────────────
       const _promptOverlay=mk("div",{
@@ -10769,13 +10756,9 @@ ${base}`;
           set(W.saveImage,"filename_prefix","one-node-flux-2-klein/krea");
           _applyAutoSave(W.saveImage);
 
-          // Krea2T Enhancer (enabled toggle + strength) — model patcher in the chain
-          set(W.enhancer,"enabled",S.kreaEnhancerEnabled!==false);
-          set(W.enhancer,"strength",+(S.kreaEnhancerStrength)||0);
-          prompt[W.enhancer].inputs.model=extModel||[W.model,0];
-
-          // Model chain: (ext|UNet) → Enhancer → LoRAs → sampler
-          const kreaFinalRef=_applyLoRAs([W.enhancer,0],isI2IMode?"KREAI2I:":"KREA:");
+          // Model chain: (ext|UNet) → LoRAs → sampler
+          const kreaModelSrc=extModel||[W.model,0];
+          const kreaFinalRef=_applyLoRAs(kreaModelSrc,isI2IMode?"KREAI2I:":"KREA:");
           set(W.sampler,"model",typeof kreaFinalRef==="string"?[kreaFinalRef,0]:kreaFinalRef);
 
           // Prompt — Prompt Builder KJ (T2I only) or raw text
@@ -13226,9 +13209,6 @@ ${base}`;
         // Model family
         familyF.dd.set(S.modelFamily||"flux");
         _applyModelFamilyUI();
-        // Krea enhancer controls
-        _kreaCtrlRebInp.setVal(S.kreaEnhancerStrength);
-        _kreaCtrlBypassToggle._setChecked(S.kreaEnhancerEnabled!==false);
         if(_refreshKreaCtrlBar) _refreshKreaCtrlBar();
         // Resolution
         if(S.isCustomRes){ resDD.set("Custom…"); customResRow.style.display="flex"; wInp.setVal(S.customW); hInp.setVal(S.customH); }

@@ -1,18 +1,33 @@
 {
   "KREA:MODEL": {
-    "inputs": { "unet_name": "krea2TurboFP8_krea2TURBO.safetensors", "weight_dtype": "default" },
+    "inputs": {
+      "unet_name": "krea2TurboFP8_krea2TURBO.safetensors",
+      "weight_dtype": "default"
+    },
     "class_type": "UNETLoader",
-    "_meta": { "title": "Load Krea UNet" }
+    "_meta": {
+      "title": "Load Krea UNet"
+    }
   },
   "KREA:CLIP": {
-    "inputs": { "clip_name": "qwen3vl_4b_bf16.safetensors", "type": "krea2", "device": "default" },
+    "inputs": {
+      "clip_name": "qwen3vl_4b_bf16.safetensors",
+      "type": "krea2",
+      "device": "default"
+    },
     "class_type": "CLIPLoader",
-    "_meta": { "title": "Load Krea CLIP" }
+    "_meta": {
+      "title": "Load Krea CLIP"
+    }
   },
   "KREA:VAE": {
-    "inputs": { "vae_name": "qwen_image_vae.safetensors" },
+    "inputs": {
+      "vae_name": "qwen_image_vae.safetensors"
+    },
     "class_type": "VAELoader",
-    "_meta": { "title": "Load Krea VAE" }
+    "_meta": {
+      "title": "Load Krea VAE"
+    }
   },
   "KREA:BUILDER": {
     "inputs": {
@@ -28,37 +43,58 @@
       "import_mode": "when empty"
     },
     "class_type": "Ideogram4PromptBuilderKJ",
-    "_meta": { "title": "Prompt Builder KJ" }
+    "_meta": {
+      "title": "Prompt Builder KJ"
+    }
   },
   "KREA:POS": {
-    "inputs": { "text": "", "clip": ["KREA:CLIP", 0] },
+    "inputs": {
+      "text": "",
+      "clip": [
+        "KREA:CLIP",
+        0
+      ]
+    },
     "class_type": "CLIPTextEncode",
-    "_meta": { "title": "Krea Positive Prompt" }
+    "_meta": {
+      "title": "Krea Positive Prompt"
+    }
   },
   "KREA:NEGBASE": {
-    "inputs": { "text": "", "clip": ["KREA:CLIP", 0] },
+    "inputs": {
+      "text": "",
+      "clip": [
+        "KREA:CLIP",
+        0
+      ]
+    },
     "class_type": "CLIPTextEncode",
-    "_meta": { "title": "Krea Negative Base" }
+    "_meta": {
+      "title": "Krea Negative Base"
+    }
   },
   "KREA:NEG": {
-    "inputs": { "conditioning": ["KREA:NEGBASE", 0] },
-    "class_type": "ConditioningZeroOut",
-    "_meta": { "title": "Krea Negative Zero" }
-  },
-  "KREA:ENH": {
     "inputs": {
-      "model": ["KREA:MODEL", 0],
-      "enabled": true,
-      "strength": 1.5,
-      "debug": false
+      "conditioning": [
+        "KREA:NEGBASE",
+        0
+      ]
     },
-    "class_type": "ComfyUI-Krea2T-Enhancer",
-    "_meta": { "title": "Krea2T Enhancer" }
+    "class_type": "ConditioningZeroOut",
+    "_meta": {
+      "title": "Krea Negative Zero"
+    }
   },
   "KREA:LATENT": {
-    "inputs": { "width": 1024, "height": 1024, "batch_size": 1 },
+    "inputs": {
+      "width": 1024,
+      "height": 1024,
+      "batch_size": 1
+    },
     "class_type": "EmptyLatentImage",
-    "_meta": { "title": "Empty Latent" }
+    "_meta": {
+      "title": "Empty Latent"
+    }
   },
   "KREA:KS": {
     "inputs": {
@@ -68,22 +104,55 @@
       "sampler_name": "er_sde",
       "scheduler": "simple",
       "denoise": 1,
-      "model": ["KREA:ENH", 0],
-      "positive": ["KREA:POS", 0],
-      "negative": ["KREA:NEG", 0],
-      "latent_image": ["KREA:LATENT", 0]
+      "model": [
+        "KREA:MODEL",
+        0
+      ],
+      "positive": [
+        "KREA:POS",
+        0
+      ],
+      "negative": [
+        "KREA:NEG",
+        0
+      ],
+      "latent_image": [
+        "KREA:LATENT",
+        0
+      ]
     },
     "class_type": "KSampler",
-    "_meta": { "title": "Krea KSampler" }
+    "_meta": {
+      "title": "Krea KSampler"
+    }
   },
   "KREA:DECODE": {
-    "inputs": { "samples": ["KREA:KS", 0], "vae": ["KREA:VAE", 0] },
+    "inputs": {
+      "samples": [
+        "KREA:KS",
+        0
+      ],
+      "vae": [
+        "KREA:VAE",
+        0
+      ]
+    },
     "class_type": "VAEDecode",
-    "_meta": { "title": "Krea Decode" }
+    "_meta": {
+      "title": "Krea Decode"
+    }
   },
   "KREA:SAVE": {
-    "inputs": { "filename_prefix": "one-node-flux-2-klein/krea", "images": ["KREA:DECODE", 0] },
+    "inputs": {
+      "filename_prefix": "one-node-flux-2-klein/krea",
+      "images": [
+        "KREA:DECODE",
+        0
+      ]
+    },
     "class_type": "SaveImage",
-    "_meta": { "title": "Save Image" }
+    "_meta": {
+      "title": "Save Image"
+    }
   }
 }
