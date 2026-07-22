@@ -884,7 +884,15 @@ app.registerExtension({
         }
         return;
       }
-      this._buildUI();
+      try{
+        this._buildUI();
+      }catch(e){
+        console.error("[FluxKlein] _buildUI failed",e);
+        const errRoot=mk("div",{width:"100%",height:NODE_H+"px",background:"#0b0b0b",color:"#ff6767",padding:"12px",boxSizing:"border-box",fontFamily:"monospace",fontSize:"11px",overflow:"auto"});
+        tx(errRoot,"FluxKlein UI failed: "+(e&&e.stack?e.stack:(e&&e.message?e.message:String(e))));
+        this.addDOMWidget("fk_ui_error","div",errRoot,{getValue(){return null;},setValue(){},serialize:false,canvasOnly:false,computeSize(){return [NODE_W,NODE_H];}});
+        this.setSize([NODE_W,NODE_H]);
+      }
     };
 
     nodeType.prototype.onResize=function(){
@@ -1277,6 +1285,20 @@ app.registerExtension({
         fontFamily:"-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif",
         color:C.text,overflow:"hidden",position:"relative"});
       root.classList.add("fk-root");
+      let _fkWidgetAdded=false;
+      const _addFkDomWidget=()=>{
+        if(_fkWidgetAdded) return;
+        this.addDOMWidget("fk_ui","div",root,{
+          getValue(){return null;},setValue(){},serialize:false,canvasOnly:false,
+          computeSize(){
+            const slotH=(LiteGraph.NODE_SLOT_HEIGHT||20);
+            const rows=Math.max((self.inputs||[]).length,(self.outputs||[]).length);
+            return [NODE_W,NODE_H+rows*slotH];
+          },
+        });
+        _fkWidgetAdded=true;
+      };
+      _addFkDomWidget();
 
 
       // Nodes 2.0 compatibility: inherit border-radius from the DOM widget wrapper so overlays
@@ -13279,17 +13301,7 @@ ${base}`;
       // slot rows LiteGraph stacks (whichever side — inputs or outputs — has more).
       // The bug was that this only counted inputs, so the always-present prompt input
       // and the image output weren't accounted for and the UI overflowed the bottom.
-      this.addDOMWidget("fk_ui","div",root,{
-        getValue(){return null;},setValue(){},serialize:false,
-        // ponytail: force visible in both classic + Vue nodes. If parameters-panel steal
-        // returns in classic, restore conditional canvasOnly with verified detection path.
-        canvasOnly:false,
-        computeSize(){
-          const slotH=(LiteGraph.NODE_SLOT_HEIGHT||20);
-          const rows=Math.max((self.inputs||[]).length,(self.outputs||[]).length);
-          return [NODE_W,NODE_H+rows*slotH];
-        },
-      });
+      _addFkDomWidget();
       _fkResizeToFit(this);
 
       // Nodes 2.0: hide the auto-injected node-type name badge rendered in the node footer.
