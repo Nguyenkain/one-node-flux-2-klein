@@ -799,6 +799,9 @@ function _oneNodeChainForward(srcId){
 
 let _activeSetStage=null;
 
+// Cache-buster: bump when the UI structure changes so stale cached DOM is dropped.
+const FK_CACHE_VER="v2";
+
 // ─────────────────────────────────────────────────────────────────────────────
 app.registerExtension({
   name:"FluxKleinPlayground.v1",
@@ -817,7 +820,6 @@ app.registerExtension({
       this.addOutput("image","IMAGE");
 
       if(!window.__fluxklein_nodes) window.__fluxklein_nodes={};
-      const FK_CACHE_VER="v2";
       if(window.__fluxklein_ver!==FK_CACHE_VER){ window.__fluxklein_nodes={}; window.__fluxklein_ver=FK_CACHE_VER; }
       const nodeId=this.id;
       const cached=window.__fluxklein_nodes[nodeId];
