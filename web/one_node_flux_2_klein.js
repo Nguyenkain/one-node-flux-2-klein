@@ -803,10 +803,7 @@ let _activeSetStage=null;
 app.registerExtension({
   name:"FluxKleinPlayground.v1",
   async beforeRegisterNodeDef(nodeType,nodeData){
-    const _fkNodeName=String(nodeData?.name||nodeData?.display_name||nodeData?.title||"");
-    const _fkModule=String(nodeData?.python_module||nodeData?.category||"");
-    if(_fkNodeName!=="FluxKleinOneNode"&&!_fkNodeName.includes("FLUX.2")&&!_fkModule.includes("one-node-flux-2-klein")) return;
-    console.info("[FluxKlein] patch node",nodeData);
+    if(nodeData.name!=="FluxKleinOneNode") return;
 
 
     nodeType.prototype.onNodeCreated=function(){
@@ -845,9 +842,7 @@ app.registerExtension({
         const _cnode=this;
         this.addDOMWidget("fk_ui","div",cached.root,{
           getValue(){return null;},setValue(){},serialize:false,
-          // ponytail: force visible in both classic + Vue nodes. If parameters-panel steal
-          // returns in classic, restore conditional canvasOnly with verified detection path.
-          canvasOnly:false,
+          canvasOnly:!_isVueNodes(),
           computeSize(){
             const slotH=(LiteGraph.NODE_SLOT_HEIGHT||20);
             const rows=Math.max((_cnode.inputs||[]).length,(_cnode.outputs||[]).length);
@@ -1288,20 +1283,6 @@ app.registerExtension({
         fontFamily:"-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif",
         color:C.text,overflow:"hidden",position:"relative"});
       root.classList.add("fk-root");
-      let _fkWidgetAdded=false;
-      const _addFkDomWidget=()=>{
-        if(_fkWidgetAdded) return;
-        this.addDOMWidget("fk_ui","div",root,{
-          getValue(){return null;},setValue(){},serialize:false,canvasOnly:false,
-          computeSize(){
-            const slotH=(LiteGraph.NODE_SLOT_HEIGHT||20);
-            const rows=Math.max((self.inputs||[]).length,(self.outputs||[]).length);
-            return [NODE_W,NODE_H+rows*slotH];
-          },
-        });
-        _fkWidgetAdded=true;
-      };
-      _addFkDomWidget();
 
 
       // Nodes 2.0 compatibility: inherit border-radius from the DOM widget wrapper so overlays
@@ -10526,12 +10507,8 @@ ${base}`;
           outpaintExpand:_isOutpaintSnap?{top:_opTop,right:_opRight,bottom:_opBottom,left:_opLeft}:null,
           useSizeSource:(activePill==="edit")?(_useSizeSource||null):null,
 
-          userLoras:S.userLoras.filter(_isActiveUserLora).map(l=>({n:l.name.split(/[\\/]/).pop(),s:l.strength})),
-          ...(S.advancedUI?{steps:S.steps||4, cfg:S.cfg!==undefined?S.cfg:1,
-
-          userLoras:_isUpscaleSnap?[]:S.userLoras.filter(l=>l.name&&l.name!=="none"&&l.enabled!==false&&+(l.strength||0)>0).map(l=>({n:l.name.split(/[\\/]/).pop(),s:l.strength})),
+          userLoras:_isUpscaleSnap?[]:S.userLoras.filter(_isActiveUserLora).map(l=>({n:l.name.split(/[\\/]/).pop(),s:l.strength})),
           ...((S.advancedUI&&!_isUpscaleSnap)?{steps:S.steps||4, cfg:S.cfg!==undefined?S.cfg:1,
-
             sampler:S.sampler||"er_sde", scheduler:S.scheduler||"simple",
             advancedUI:true}:{}),
           ...(_kreaBuilderSnap?{modelFamily:"krea",kreaPromptMode:"builder",kreaBuilder:_kreaBuilderSnap}:{}),
@@ -13304,7 +13281,15 @@ ${base}`;
       // slot rows LiteGraph stacks (whichever side — inputs or outputs — has more).
       // The bug was that this only counted inputs, so the always-present prompt input
       // and the image output weren't accounted for and the UI overflowed the bottom.
-      _addFkDomWidget();
+      this.addDOMWidget("fk_ui","div",root,{
+        getValue(){return null;},setValue(){},serialize:false,
+        canvasOnly:!_isVueNodes(),
+        computeSize(){
+          const slotH=(LiteGraph.NODE_SLOT_HEIGHT||20);
+          const rows=Math.max((self.inputs||[]).length,(self.outputs||[]).length);
+          return [NODE_W,NODE_H+rows*slotH];
+        },
+      });
       _fkResizeToFit(this);
 
       // Nodes 2.0: hide the auto-injected node-type name badge rendered in the node footer.
